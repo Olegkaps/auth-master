@@ -1,0 +1,69 @@
+:root {
+  font-family: system-ui, sans-serif;
+  background: #0f1419;
+  color: #e6edf3;
+}
+* {
+  box-sizing: border-box;
+}
+#app {
+  max-width: 520px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+h1 {
+  font-size: 1.25rem;
+}
+label {
+  display: block;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  color: #8b949e;
+}
+input {
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+  background: #161b22;
+  color: inherit;
+}
+button {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: none;
+  background: #238636;
+  color: #fff;
+  cursor: pointer;
+}
+button.secondary {
+  background: #21262d;
+  border: 1px solid #30363d;
+}
+.msg {
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+  color: #d29922;
+}
+.err {
+  color: #f85149;
+}
+section {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #21262d;
+}
+ul.sessions {
+  list-style: none;
+  padding: 0;
+}
+ul.sessions li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}

@@ -1,0 +1,23 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - gofmt
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+
+linters-settings:
+  staticcheck:
+    checks: ["all", "-ST1000"]
+
+issues:
+  exclude-rules:
+    # Пустые функции — только для swag @Router-документации
+    - path: internal/transport/http/swagger_system\.go
+      linters: [unused]

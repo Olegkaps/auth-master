@@ -1,0 +1,1292 @@
+basePath: /
+definitions:
+  httptransport.AdminUserRow:
+    properties:
+      created_at:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      kind:
+        type: string
+      login:
+        type: string
+      superuser:
+        type: boolean
+    type: object
+  httptransport.AdminUsersResponse:
+    properties:
+      users:
+        items:
+          $ref: '#/definitions/httptransport.AdminUserRow'
+        type: array
+    type: object
+  httptransport.AssignRoleRequestBody:
+    properties:
+      level:
+        type: string
+      user_id:
+        type: string
+      valid_until:
+        type: string
+    type: object
+  httptransport.ChangePasswordRequestBody:
+    properties:
+      new_password:
+        type: string
+      old_password:
+        type: string
+    type: object
+  httptransport.CreateRegistrationInviteRequest:
+    properties:
+      email:
+        type: string
+      ttl_seconds:
+        type: integer
+    type: object
+  httptransport.CreateRegistrationInviteResponse:
+    properties:
+      expires_at:
+        type: string
+      registration_url:
+        type: string
+      token:
+        type: string
+    type: object
+  httptransport.CreateRoleRequestBody:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+    type: object
+  httptransport.CreateRoleResponse:
+    properties:
+      role_id:
+        type: string
+    type: object
+  httptransport.DecideRoleRequestBody:
+    properties:
+      approve:
+        type: boolean
+    type: object
+  httptransport.ErrEnvelope:
+    properties:
+      error:
+        type: string
+    type: object
+  httptransport.HasRoleResponse:
+    properties:
+      has_role:
+        type: boolean
+    type: object
+  httptransport.LoginOTPResponse:
+    properties:
+      otp_sent:
+        type: boolean
+    type: object
+  httptransport.LoginPasswordExpiredResponse:
+    properties:
+      password_expired:
+        type: boolean
+    type: object
+  httptransport.LoginRequestBody:
+    properties:
+      login:
+        type: string
+      password:
+        type: string
+    type: object
+  httptransport.LoginVerifyRequestBody:
+    properties:
+      code:
+        type: string
+      device_id:
+        type: string
+      device_label:
+        type: string
+      login:
+        type: string
+    type: object
+  httptransport.MeResponse:
+    properties:
+      email: {}
+      id:
+        type: string
+      kind:
+        type: string
+      login:
+        type: string
+      superuser:
+        type: boolean
+    type: object
+  httptransport.PatchRoleRequestBody:
+    properties:
+      description:
+        type: string
+    type: object
+  httptransport.RefreshRequestBody:
+    properties:
+      device_id:
+        type: string
+      device_label:
+        type: string
+    type: object
+  httptransport.RegisterCreatedResponse:
+    properties:
+      user_id:
+        type: string
+    type: object
+  httptransport.RegisterRequestBody:
+    properties:
+      email:
+        type: string
+      invite_token:
+        type: string
+      login:
+        type: string
+      password:
+        type: string
+    type: object
+  httptransport.RegistrationInvitePreviewResponse:
+    properties:
+      email:
+        type: string
+      expires_at:
+        type: string
+      valid:
+        type: boolean
+    type: object
+  httptransport.RoleDTO:
+    properties:
+      CreatedAt:
+        type: string
+      Description:
+        type: string
+      ID:
+        type: string
+      Name:
+        type: string
+    type: object
+  httptransport.RoleRequestCreateBody:
+    properties:
+      target_user_id:
+        type: string
+    type: object
+  httptransport.RoleRequestCreateResponse:
+    properties:
+      request_id:
+        type: string
+    type: object
+  httptransport.RoleRequestRow:
+    properties:
+      DecidedBy:
+        type: string
+      ID:
+        type: string
+      RequesterID:
+        type: string
+      RoleID:
+        type: string
+      Status:
+        type: string
+      TargetUserID:
+        type: string
+    type: object
+  httptransport.RoleRequestsListResponse:
+    properties:
+      requests:
+        items:
+          $ref: '#/definitions/httptransport.RoleRequestRow'
+        type: array
+    type: object
+  httptransport.RolesListResponse:
+    properties:
+      roles:
+        items:
+          $ref: '#/definitions/httptransport.RoleDTO'
+        type: array
+    type: object
+  httptransport.ServiceTokenRequestBody:
+    properties:
+      login:
+        type: string
+      secret:
+        type: string
+    type: object
+  httptransport.SessionRevokeOTPResponse:
+    properties:
+      status:
+        type: string
+    type: object
+  httptransport.SessionRevokeRequestBody:
+    properties:
+      code:
+        type: string
+    type: object
+  httptransport.SessionRow:
+    properties:
+      created_at:
+        type: string
+      device_id:
+        type: string
+      device_label:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+      revoked:
+        type: boolean
+    type: object
+  httptransport.SessionsListResponse:
+    properties:
+      sessions:
+        items:
+          $ref: '#/definitions/httptransport.SessionRow'
+        type: array
+    type: object
+  httptransport.StepUp2FACompleteRequest:
+    properties:
+      code:
+        type: string
+      correlation_id:
+        type: string
+    type: object
+  httptransport.StepUp2FAExpireRequestBody:
+    properties:
+      correlation_id:
+        type: string
+    type: object
+  httptransport.StepUp2FAOKResponse:
+    properties:
+      status:
+        type: string
+    type: object
+  httptransport.StepUp2FAStartRequestBody:
+    properties:
+      ttl_seconds:
+        type: integer
+    type: object
+  httptransport.StepUp2FAStartResponse:
+    properties:
+      correlation_id:
+        type: string
+    type: object
+  httptransport.StepUp2FAStatusResponse:
+    properties:
+      status:
+        type: string
+    type: object
+  httptransport.TokenIntrospectionResponse:
+    properties:
+      kid:
+        type: string
+      login:
+        type: string
+      subject:
+        type: string
+      typ:
+        type: string
+    type: object
+  httptransport.TokenPairResponse:
+    properties:
+      access_token:
+        type: string
+      csrf_token:
+        type: string
+      expires_at:
+        type: string
+    type: object
+  httptransport.UserRoleDTO:
+    properties:
+      GrantedBy:
+        type: string
+      ID:
+        type: string
+      Level:
+        type: string
+      RoleID:
+        type: string
+      UserID:
+        type: string
+      ValidFrom:
+        type: string
+      ValidUntil:
+        type: string
+    type: object
+  httptransport.UserRolesListResponse:
+    properties:
+      user_roles:
+        items:
+          $ref: '#/definitions/httptransport.UserRoleDTO'
+        type: array
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Authentication and authorization REST API (JWT access + refresh, OTP,
+    RBAC, registration invites).
+  title: Auth service API
+  version: "1.0"
+paths:
+  /healthz:
+    get:
+      description: Returns 204 when the process accepts HTTP.
+      responses:
+        "204":
+          description: No content
+      summary: Liveness probe
+      tags:
+      - system
+  /metrics:
+    get:
+      description: OpenMetrics/Prometheus text exposition format.
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Metrics body
+          schema:
+            type: string
+      summary: Prometheus metrics
+      tags:
+      - system
+  /v1/admin/registration-invites:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Must match csrf_token cookie (set after login)
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Optional locked email and TTL
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.CreateRegistrationInviteRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/httptransport.CreateRegistrationInviteResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Not a superuser
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Create registration invite
+      tags:
+      - admin
+  /v1/admin/signing-keys/rotate:
+    post:
+      parameters:
+      - description: Must match csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No content
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Rotate signing key
+      tags:
+      - admin
+  /v1/admin/users:
+    get:
+      parameters:
+      - description: Max users (default 100, max 500)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.AdminUsersResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List users
+      tags:
+      - admin
+  /v1/auth/login:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.LoginRequestBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: otp_sent indicates whether OTP email was sent
+          schema:
+            $ref: '#/definitions/httptransport.LoginOTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid credentials
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Password must be changed
+          schema:
+            $ref: '#/definitions/httptransport.LoginPasswordExpiredResponse'
+        "423":
+          description: Account locked
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Login (password step)
+      tags:
+      - auth
+  /v1/auth/login/verify-otp:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: OTP and device binding
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.LoginVerifyRequestBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Includes csrf_token for subsequent CSRF-protected calls
+          schema:
+            $ref: '#/definitions/httptransport.TokenPairResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid OTP
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Verify login OTP
+      tags:
+      - auth
+  /v1/auth/logout:
+    post:
+      description: Requires X-CSRF-Token; sends refresh cookie if present (REFRESH_COOKIE_NAME,
+        default refresh_token).
+      parameters:
+      - description: Must match csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No content
+        "403":
+          description: CSRF validation failed
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Logout
+      tags:
+      - auth
+  /v1/auth/password:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Old and new password
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.ChangePasswordRequestBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Password policy or validation
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid old password
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Change password
+      tags:
+      - auth
+  /v1/auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Requires HttpOnly refresh cookie (name from REFRESH_COOKIE_NAME,
+        default refresh_token) and X-CSRF-Token matching the csrf_token cookie.
+      parameters:
+      - description: Must match csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Optional device metadata
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/httptransport.RefreshRequestBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.TokenPairResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: CSRF validation failed
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Refresh access token
+      tags:
+      - auth
+  /v1/auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Creates an account; invite must be valid and may lock the registration
+        email.
+      parameters:
+      - description: Registration payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.RegisterRequestBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/httptransport.RegisterCreatedResponse'
+        "400":
+          description: Invalid JSON, password policy, duplicate login/email, …
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "410":
+          description: Invalid or expired invite
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Register human user
+      tags:
+      - auth
+  /v1/auth/registration-invite:
+    get:
+      parameters:
+      - description: Raw invite token
+        in: query
+        name: token
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.RegistrationInvitePreviewResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Preview registration invite
+      tags:
+      - auth
+  /v1/auth/service-token:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Service login and secret
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.ServiceTokenRequestBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: access_token only (no csrf_token)
+          schema:
+            $ref: '#/definitions/httptransport.TokenPairResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Issue service access token
+      tags:
+      - auth
+  /v1/auth/step-up-2fa/complete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Correlation id and OTP code
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.StepUp2FACompleteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.StepUp2FAOKResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid OTP
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Complete step-up 2FA OTP
+      tags:
+      - auth
+  /v1/auth/step-up-2fa/expire:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Must match csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Correlation id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.StepUp2FAExpireRequestBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: CSRF validation failed
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Expire step-up 2FA session
+      tags:
+      - auth
+  /v1/auth/step-up-2fa/start:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Optional ttl_seconds (default 5m)
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/httptransport.StepUp2FAStartRequestBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.StepUp2FAStartResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Start step-up 2FA challenge
+      tags:
+      - auth
+  /v1/auth/step-up-2fa/status:
+    get:
+      parameters:
+      - description: Correlation id from start
+        in: query
+        name: correlation_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.StepUp2FAStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Step-up 2FA status
+      tags:
+      - auth
+  /v1/auth/token/info:
+    get:
+      description: 'Returns claims for valid access or service tokens. Response header
+        X-Token-Stale: 1 when signing key rotated.'
+      parameters:
+      - description: Bearer token
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.TokenIntrospectionResponse'
+        "400":
+          description: Wrong token type
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Missing, invalid, or stale token
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Introspect JWT (access or service)
+      tags:
+      - auth
+  /v1/auth/token/verify-access:
+    get:
+      parameters:
+      - description: Bearer access token
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.TokenIntrospectionResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Verify access JWT only
+      tags:
+      - auth
+  /v1/me:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.MeResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Current user
+      tags:
+      - me
+  /v1/me/has-role:
+    get:
+      parameters:
+      - description: Role name
+        in: query
+        name: role_name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.HasRoleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Check named role
+      tags:
+      - me
+  /v1/role-requests/{requestID}/decide:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Request UUID
+        in: path
+        name: requestID
+        required: true
+        type: string
+      - description: Approve or reject
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.DecideRoleRequestBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Decide role request
+      tags:
+      - roles
+  /v1/roles:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.RolesListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List roles
+      tags:
+      - roles
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role name and description
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.CreateRoleRequestBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/httptransport.CreateRoleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Create role
+      tags:
+      - roles
+  /v1/roles/{roleID}/description:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: New description
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.PatchRoleRequestBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Patch role description
+      tags:
+      - roles
+  /v1/roles/{roleID}/members:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: Target user and level (member or role_admin)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.AssignRoleRequestBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Assign role to user
+      tags:
+      - roles
+  /v1/roles/{roleID}/members/{userID}:
+    delete:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: User UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Remove role membership
+      tags:
+      - roles
+  /v1/roles/{roleID}/requests:
+    get:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.RoleRequestsListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List pending role requests
+      tags:
+      - roles
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: Optional target user (defaults to caller)
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/httptransport.RoleRequestCreateBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/httptransport.RoleRequestCreateResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Request role membership
+      tags:
+      - roles
+  /v1/sessions:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.SessionsListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List refresh sessions
+      tags:
+      - sessions
+  /v1/sessions/{sessionID}/revoke:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Session UUID
+        in: path
+        name: sessionID
+        required: true
+        type: string
+      - description: OTP from email
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.SessionRevokeRequestBody'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid OTP
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Revoke session
+      tags:
+      - sessions
+  /v1/sessions/revoke-otp:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.SessionRevokeOTPResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Start session revoke (OTP)
+      tags:
+      - sessions
+  /v1/users/{userID}/roles:
+    get:
+      parameters:
+      - description: User UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.UserRolesListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List user roles
+      tags:
+      - roles
+schemes:
+- http
+- https
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and the access JWT.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

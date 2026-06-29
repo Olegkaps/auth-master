@@ -1,0 +1,31 @@
+---
+description: Качество бэкенда Go — линтеры, тесты, обязательная интеграция в Compose
+globs:
+  - "**/*.go"
+  - "go.mod"
+  - "Makefile"
+  - ".golangci.yml"
+  - "docker-compose.test.yml"
+  - ".github/workflows/**"
+alwaysApply: true
+---
+
+## После изменений в бэкенде (Go: `cmd/`, `internal/`, `tools/`, `go.mod`)
+
+1. **Линтеры и форматирование** — перед завершением задачи запусти (или эквивалент):
+   - `make fmt-check`
+   - `make lint-go` (нужен `golangci-lint`; установка: `make lint-go-install`, разовый запуск без установки: `make lint-go-run`)
+
+2. **Тесты на хосте**:
+   - `make test` (минимум)
+   - предпочтительно: `make test-race` или `make check` (fmt-check + vet + lint-go + test)
+
+3. **Обязательно** — полный прогон интеграции и coverage gate **в контейнере** (как в CI):
+   - `make docker-test-integration` **или**  
+     `docker compose -f docker-compose.test.yml run --rm test-integration`  
+   - с Podman: `make podman-test-integration` **или**  
+     `podman compose -f docker-compose.test.yml run --rm test-integration`
+
+   Без этого шага изменения бэкенда считаются непроверенными: поднимается Postgres, `INTEGRATION_DATABASE_URL`, выполняется `go test ./...` и covgate.
+
+4. Не отключай и не ослабляй `.golangci.yml` без явной необходимости; новые предупреждения линтера исправляй в коде, а не подавляй без причины.

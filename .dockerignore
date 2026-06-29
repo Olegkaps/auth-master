@@ -1,0 +1,14 @@
+.git
+.github
+web/node_modules
+web/dist
+*.out
+coverage.out
+.env
+.env.*
+!.env.example
+*.md
+!README.md
+.DS_Store
+terminals
+agent-transcripts

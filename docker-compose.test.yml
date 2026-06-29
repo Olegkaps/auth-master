@@ -1,0 +1,72 @@
+# Тесты в контейнере (Podman Compose). Кэши Go: тома test-go-mod и test-go-build.
+# Сервис test-integration поднимает Postgres рядом и задаёт INTEGRATION_DATABASE_URL — Testcontainers
+# для БД не нужен (сокет OCI не требуется).
+# Сервис test с Testcontainers: на хосте нужен API Podman — том ${PODMAN_SOCKET} → /var/run/docker.sock
+# (make podman-test подставляет путь из `podman info`, либо задайте PODMAN_SOCKET вручную).
+#
+# Rootless Podman (Linux), перед запуском:
+#
+#   podman compose -f docker-compose.test.yml run --rm test
+#   podman compose -f docker-compose.test.yml run --rm test-integration
+#   podman compose -f docker-compose.test.yml run --rm test-coverage
+#
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth
+      POSTGRES_DB: auth
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  test:
+    image: golang:1.25-bookworm
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - test-go-mod:/go/pkg/mod
+      - test-go-build:/root/.cache/go-build
+    environment:
+      CGO_ENABLED: "0"
+      # Внутри контейнера сокет Podman смонтирован как «docker API» для Testcontainers.
+      DOCKER_HOST: unix:///var/run/docker.sock
+    command: sh -eu -c "go mod download && go test ./... -count=1"
+
+  test-integration:
+    image: golang:1.25-bookworm
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - test-go-mod:/go/pkg/mod
+      - test-go-build:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CGO_ENABLED: "0"
+      INTEGRATION_DATABASE_URL: postgres://auth:auth@postgres:5432/auth?sslmode=disable
+      REQUIRE_COVERAGE_GATE: "1"
+    command: sh -eu -c "go mod download && go test ./... -count=1 && go test -tags=covgate ./internal/covgate -count=1"
+
+  test-coverage:
+    image: golang:1.25-bookworm
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - test-go-mod:/go/pkg/mod
+      - test-go-build:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CGO_ENABLED: "0"
+      INTEGRATION_DATABASE_URL: postgres://auth:auth@postgres:5432/auth?sslmode=disable
+    command: sh -eu -c "go mod download && go test ./... -count=1 -coverprofile=coverage.out && go tool cover -func=coverage.out | tail -30"
+
+volumes:
+  test-go-mod:
+  test-go-build:

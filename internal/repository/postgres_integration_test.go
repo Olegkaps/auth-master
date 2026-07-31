@@ -73,7 +73,7 @@ func TestIntegration_RoleAssignment(t *testing.T) {
 	ctx := context.Background()
 	uid, err := s.CreateHumanUser(ctx, "bob", "b@test.dev", "h")
 	require.NoError(t, err)
-	rid, err := s.CreateRole(ctx, "editors", "desc")
+	rid, err := s.CreateRole(ctx, "editors", "desc", nil)
 	require.NoError(t, err)
 	require.NoError(t, s.AssignUserRole(ctx, uid, rid, domain.RoleMember, &uid, time.Now(), nil))
 	ok, err := s.UserHasRoleName(ctx, uid, "editors", time.Now())

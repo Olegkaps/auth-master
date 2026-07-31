@@ -16,7 +16,7 @@ func TestIntegration_EnsureBootstrapAdmin(t *testing.T) {
 	cfg := testConfig()
 	cfg.BootstrapSuperuserLogin = "bootadm"
 	cfg.BootstrapSuperuserEmail = "bootadm@test.dev"
-	cfg.BootstrapSuperuserPassword = "password-bootstrap-1"
+	cfg.BootstrapSuperuserPassword = "Password-Bootstrap-1!"
 
 	m := &mail.Sender{Host: "127.0.0.1", Port: 1025, From: "t@test.dev"}
 	a, err := NewAuth(cfg, repo, m, nil)

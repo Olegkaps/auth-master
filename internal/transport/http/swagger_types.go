@@ -22,6 +22,7 @@ type RegisterCreatedResponse struct {
 type RegistrationInvitePreviewResponse struct {
 	Valid     bool   `json:"valid"`
 	Email     string `json:"email,omitempty"`
+	Superuser bool   `json:"superuser,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
@@ -29,6 +30,8 @@ type RegistrationInvitePreviewResponse struct {
 type CreateRegistrationInviteRequest struct {
 	Email      string `json:"email"`
 	TTLSeconds int    `json:"ttl_seconds"`
+	// Superuser grants superuser access to the account registered with this invite.
+	Superuser bool `json:"superuser"`
 }
 
 // CreateRegistrationInviteResponse is returned when an invite is created.
@@ -47,6 +50,9 @@ type LoginRequestBody struct {
 // LoginOTPResponse is returned when OTP was sent (or would be sent).
 type LoginOTPResponse struct {
 	OTPSent bool `json:"otp_sent"`
+	// LoginChallenge must be sent back to verify-otp; it binds the OTP to this
+	// password-verified attempt (second factor).
+	LoginChallenge string `json:"login_challenge"`
 }
 
 // LoginPasswordExpiredResponse is returned with HTTP 403 when the password must be changed.
@@ -54,25 +60,52 @@ type LoginPasswordExpiredResponse struct {
 	PasswordExpired bool `json:"password_expired"`
 }
 
+// MagicLinkStartRequest is POST /auth/login/magic-link.
+type MagicLinkStartRequest struct {
+	Login string `json:"login"`
+}
+
+// MagicLinkStartResponse acknowledges the request (always, to avoid enumeration).
+type MagicLinkStartResponse struct {
+	Status string `json:"status" example:"link_sent"`
+}
+
+// MagicLinkVerifyRequest is POST /auth/login/magic-link/verify.
+type MagicLinkVerifyRequest struct {
+	Token       string `json:"token"`
+	DeviceID    string `json:"device_id"`
+	DeviceLabel string `json:"device_label"`
+}
+
 // LoginVerifyRequestBody is the body for POST /auth/login/verify-otp.
 type LoginVerifyRequestBody struct {
-	Login       string `json:"login"`
+	Challenge   string `json:"challenge"`
 	Code        string `json:"code"`
 	DeviceID    string `json:"device_id"`
 	DeviceLabel string `json:"device_label"`
 }
 
-// TokenPairResponse is returned after OTP verify (includes csrf_token) or refresh (without csrf_token).
+// TokenPairResponse is returned after OTP verify (includes csrf_token) or refresh.
+// refresh_token is returned for multi-account clients that manage tokens per account.
 type TokenPairResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresAt   string `json:"expires_at"`
-	CSRFToken   string `json:"csrf_token,omitempty"`
+	AccessToken  string `json:"access_token"`
+	ExpiresAt    string `json:"expires_at"`
+	CSRFToken    string `json:"csrf_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+}
+
+// LogoutRequest optionally names a specific account's refresh token to revoke.
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 // RefreshRequestBody is the optional JSON body for POST /auth/refresh.
 type RefreshRequestBody struct {
 	DeviceID    string `json:"device_id"`
 	DeviceLabel string `json:"device_label"`
+	// RefreshToken lets a multi-account client refresh a specific account without
+	// the cookie (non-ambient, so no CSRF header is required for this path).
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 // ServiceTokenRequestBody is the body for POST /auth/service-token.
@@ -109,9 +142,33 @@ type MeResponse struct {
 	Superuser bool   `json:"superuser"`
 }
 
+// StatusResponse is a simple {status} acknowledgement.
+type StatusResponse struct {
+	Status string `json:"status" example:"otp_sent"`
+}
+
 // ChangePasswordRequestBody is POST /auth/password.
 type ChangePasswordRequestBody struct {
 	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+	// Code is the OTP emailed by POST /v1/auth/password/2fa.
+	Code string `json:"code"`
+}
+
+// PasswordResetStartRequest is POST /auth/password/reset/start.
+type PasswordResetStartRequest struct {
+	Login string `json:"login"`
+}
+
+// PasswordResetStartResponse acknowledges a reset request (always, to avoid enumeration).
+type PasswordResetStartResponse struct {
+	Status string `json:"status" example:"otp_sent"`
+}
+
+// PasswordResetCompleteRequest is POST /auth/password/reset/complete.
+type PasswordResetCompleteRequest struct {
+	Login       string `json:"login"`
+	Code        string `json:"code"`
 	NewPassword string `json:"new_password"`
 }
 
@@ -142,10 +199,11 @@ type SessionRevokeRequestBody struct {
 
 // RoleDTO matches JSON encoding of domain.Role (stdlib uses struct field names as keys).
 type RoleDTO struct {
-	ID          string `json:"ID"`
-	Name        string `json:"Name"`
-	Description string `json:"Description"`
-	CreatedAt   string `json:"CreatedAt"`
+	ID          string   `json:"ID"`
+	Name        string   `json:"Name"`
+	Description string   `json:"Description"`
+	ParentIDs   []string `json:"ParentIDs"`
+	CreatedAt   string   `json:"CreatedAt"`
 }
 
 // RolesListResponse is GET /roles.
@@ -155,8 +213,10 @@ type RolesListResponse struct {
 
 // CreateRoleRequestBody is POST /roles.
 type CreateRoleRequestBody struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	ParentID    string   `json:"parent_id,omitempty"`
+	ParentIDs   []string `json:"parent_ids,omitempty"`
 }
 
 // CreateRoleResponse is returned after creating a role.
@@ -167,6 +227,29 @@ type CreateRoleResponse struct {
 // PatchRoleRequestBody is PATCH /roles/{roleID}/description.
 type PatchRoleRequestBody struct {
 	Description string `json:"description"`
+}
+
+// SetRoleParentRequest is PATCH /roles/{roleID}/parent.
+type SetRoleParentRequest struct {
+	ParentID string `json:"parent_id"`
+}
+
+// MountRoleRequest is POST /roles/{roleID}/mounts.
+type MountRoleRequest struct {
+	ParentID string `json:"parent_id"`
+}
+
+// RoleMemberRow is one member in RoleMembersResponse.
+type RoleMemberRow struct {
+	UserID string `json:"user_id"`
+	Login  string `json:"login"`
+	Email  any    `json:"email"`
+	Level  string `json:"level"`
+}
+
+// RoleMembersResponse is GET /roles/{roleID}/members.
+type RoleMembersResponse struct {
+	Members []RoleMemberRow `json:"members"`
 }
 
 // UserRoleDTO matches JSON encoding of domain.UserRole.
@@ -198,8 +281,10 @@ type RoleRequestCreateBody struct {
 }
 
 // RoleRequestCreateResponse is returned when a role request is created.
+// Status is "granted" (manager — no approval needed) or "pending" (awaiting a decision).
 type RoleRequestCreateResponse struct {
-	RequestID string `json:"request_id"`
+	Status    string `json:"status" example:"pending"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // RoleRequestRow matches JSON encoding of repository.RoleRequest.

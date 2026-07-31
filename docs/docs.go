@@ -258,6 +258,103 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/auth/login/magic-link": {
+            "post": {
+                "description": "Public passwordless flow. Always returns 200 to avoid enumeration; a link is emailed only when the login exists and has an email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Request a magic login link",
+                "parameters": [
+                    {
+                        "description": "Login to send a link to",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.MagicLinkStartRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.MagicLinkStartResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/auth/login/magic-link/verify": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Complete magic-link login",
+                "parameters": [
+                    {
+                        "description": "One-time token and device binding",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.MagicLinkVerifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Includes csrf_token",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.TokenPairResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or expired link",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/auth/login/verify-otp": {
             "post": {
                 "consumes": [
@@ -311,7 +408,7 @@ const docTemplate = `{
         },
         "/v1/auth/logout": {
             "post": {
-                "description": "Requires X-CSRF-Token; sends refresh cookie if present (REFRESH_COOKIE_NAME, default refresh_token).",
+                "description": "Revokes the session named by refresh_token in the body (multi-account, non-ambient) or, if absent, the HttpOnly cookie session (requires X-CSRF-Token).",
                 "tags": [
                     "auth"
                 ],
@@ -319,10 +416,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Must match csrf_token cookie",
+                        "description": "Required only for the cookie path",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
+                    },
+                    {
+                        "description": "Optional refresh_token to revoke a specific account",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.LogoutRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -345,6 +449,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Requires the old password AND the email OTP from POST /v1/auth/password/2fa.",
                 "consumes": [
                     "application/json"
                 ],
@@ -357,7 +462,7 @@ const docTemplate = `{
                 "summary": "Change password",
                 "parameters": [
                     {
-                        "description": "Old and new password",
+                        "description": "Old/new password and 2FA code",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -377,13 +482,132 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Invalid old password",
+                        "description": "Invalid old password or 2FA code",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/auth/password/2fa": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Emails a one-time code that must be supplied to POST /v1/auth/password.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Start password change 2FA",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.StatusResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/auth/password/reset/complete": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Complete password reset (OTP)",
+                "parameters": [
+                    {
+                        "description": "Login, OTP code and new password",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.PasswordResetCompleteRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "400": {
+                        "description": "Password policy or validation",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or expired OTP",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/auth/password/reset/start": {
+            "post": {
+                "description": "Public forgot/expired-password flow. Always returns 200 to avoid account enumeration; an email is sent only when the login exists and has an email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Start password reset (OTP)",
+                "parameters": [
+                    {
+                        "description": "Login to reset",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.PasswordResetStartRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.PasswordResetStartResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
@@ -1048,7 +1272,7 @@ const docTemplate = `{
                 "summary": "Create role",
                 "parameters": [
                     {
-                        "description": "Role name and description",
+                        "description": "Role name, description and optional parent_id",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -1072,6 +1296,51 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/roles/{roleID}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Delete role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
@@ -1140,6 +1409,56 @@ const docTemplate = `{
             }
         },
         "/v1/roles/{roleID}/members": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all users holding the role, admins first, with login and email.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "List role members",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RoleMembersResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            },
             "post": {
                 "security": [
                     {
@@ -1226,6 +1545,165 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/roles/{roleID}/mounts": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Adds a parent edge without replacing existing mounts. Membership and role-admin authority inherit through every parent path. Cycles are rejected.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Mount role under parent",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Parent role UUID",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.MountRoleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/roles/{roleID}/mounts/{parentID}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Unmount role from parent",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Parent role UUID",
+                        "name": "parentID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/roles/{roleID}/parent": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Establishes the role hierarchy. Pass an empty parent_id to detach. Rejects cycles.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Set role parent",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Parent role UUID or empty to clear",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.SetRoleParentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "400": {
+                        "description": "Bad id or cycle",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
@@ -1404,6 +1882,46 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/sessions/{sessionID}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Immediately revokes one of your refresh sessions; you're already authenticated, so no email OTP is needed.",
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "Revoke own session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session UUID",
+                        "name": "sessionID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/sessions/{sessionID}/revoke": {
             "post": {
                 "security": [
@@ -1562,6 +2080,10 @@ const docTemplate = `{
         "httptransport.ChangePasswordRequestBody": {
             "type": "object",
             "properties": {
+                "code": {
+                    "description": "Code is the OTP emailed by POST /v1/auth/password/2fa.",
+                    "type": "string"
+                },
                 "new_password": {
                     "type": "string"
                 },
@@ -1575,6 +2097,10 @@ const docTemplate = `{
             "properties": {
                 "email": {
                     "type": "string"
+                },
+                "superuser": {
+                    "description": "Superuser grants superuser access to the account registered with this invite.",
+                    "type": "boolean"
                 },
                 "ttl_seconds": {
                     "type": "integer"
@@ -1603,6 +2129,15 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
+                },
+                "parent_id": {
+                    "type": "string"
+                },
+                "parent_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -1641,6 +2176,10 @@ const docTemplate = `{
         "httptransport.LoginOTPResponse": {
             "type": "object",
             "properties": {
+                "login_challenge": {
+                    "description": "LoginChallenge must be sent back to verify-otp; it binds the OTP to this\npassword-verified attempt (second factor).",
+                    "type": "string"
+                },
                 "otp_sent": {
                     "type": "boolean"
                 }
@@ -1668,6 +2207,9 @@ const docTemplate = `{
         "httptransport.LoginVerifyRequestBody": {
             "type": "object",
             "properties": {
+                "challenge": {
+                    "type": "string"
+                },
                 "code": {
                     "type": "string"
                 },
@@ -1676,8 +2218,44 @@ const docTemplate = `{
                 },
                 "device_label": {
                     "type": "string"
-                },
+                }
+            }
+        },
+        "httptransport.LogoutRequest": {
+            "type": "object",
+            "properties": {
+                "refresh_token": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.MagicLinkStartRequest": {
+            "type": "object",
+            "properties": {
                 "login": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.MagicLinkStartResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "link_sent"
+                }
+            }
+        },
+        "httptransport.MagicLinkVerifyRequest": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string"
+                },
+                "device_label": {
+                    "type": "string"
+                },
+                "token": {
                     "type": "string"
                 }
             }
@@ -1700,6 +2278,45 @@ const docTemplate = `{
                 }
             }
         },
+        "httptransport.MountRoleRequest": {
+            "type": "object",
+            "properties": {
+                "parent_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.PasswordResetCompleteRequest": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "login": {
+                    "type": "string"
+                },
+                "new_password": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.PasswordResetStartRequest": {
+            "type": "object",
+            "properties": {
+                "login": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.PasswordResetStartResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "otp_sent"
+                }
+            }
+        },
         "httptransport.PatchRoleRequestBody": {
             "type": "object",
             "properties": {
@@ -1715,6 +2332,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "device_label": {
+                    "type": "string"
+                },
+                "refresh_token": {
+                    "description": "RefreshToken lets a multi-account client refresh a specific account without\nthe cookie (non-ambient, so no CSRF header is required for this path).",
                     "type": "string"
                 }
             }
@@ -1753,6 +2374,9 @@ const docTemplate = `{
                 "expires_at": {
                     "type": "string"
                 },
+                "superuser": {
+                    "type": "boolean"
+                },
                 "valid": {
                     "type": "boolean"
                 }
@@ -1772,6 +2396,38 @@ const docTemplate = `{
                 },
                 "Name": {
                     "type": "string"
+                },
+                "ParentIDs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "httptransport.RoleMemberRow": {
+            "type": "object",
+            "properties": {
+                "email": {},
+                "level": {
+                    "type": "string"
+                },
+                "login": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.RoleMembersResponse": {
+            "type": "object",
+            "properties": {
+                "members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httptransport.RoleMemberRow"
+                    }
                 }
             }
         },
@@ -1788,6 +2444,10 @@ const docTemplate = `{
             "properties": {
                 "request_id": {
                     "type": "string"
+                },
+                "status": {
+                    "type": "string",
+                    "example": "pending"
                 }
             }
         },
@@ -1897,6 +2557,23 @@ const docTemplate = `{
                 }
             }
         },
+        "httptransport.SetRoleParentRequest": {
+            "type": "object",
+            "properties": {
+                "parent_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.StatusResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "otp_sent"
+                }
+            }
+        },
         "httptransport.StepUp2FACompleteRequest": {
             "type": "object",
             "properties": {
@@ -1975,6 +2652,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "expires_at": {
+                    "type": "string"
+                },
+                "refresh_token": {
                     "type": "string"
                 }
             }

@@ -16,6 +16,7 @@ import (
 type RegistrationInvitePreview struct {
 	Valid     bool
 	Email     *string
+	Superuser bool
 	ExpiresAt time.Time
 }
 
@@ -31,11 +32,12 @@ func (a *Auth) PreviewRegistrationInvite(ctx context.Context, rawToken string) (
 	if inv == nil {
 		return &RegistrationInvitePreview{Valid: false}, nil
 	}
-	return &RegistrationInvitePreview{Valid: true, Email: inv.Email, ExpiresAt: inv.ExpiresAt}, nil
+	return &RegistrationInvitePreview{Valid: true, Email: inv.Email, Superuser: inv.Superuser, ExpiresAt: inv.ExpiresAt}, nil
 }
 
 // CreateRegistrationInvite returns a one-time raw token (show once). Only superusers may call this.
-func (a *Auth) CreateRegistrationInvite(ctx context.Context, adminID uuid.UUID, lockedEmail *string, ttl time.Duration) (rawToken string, expiresAt time.Time, registrationURL string, err error) {
+// When superuser is true, the registered account is granted superuser access.
+func (a *Auth) CreateRegistrationInvite(ctx context.Context, adminID uuid.UUID, lockedEmail *string, superuser bool, ttl time.Duration) (rawToken string, expiresAt time.Time, registrationURL string, err error) {
 	ok, err := a.IsSuperuser(ctx, adminID)
 	if err != nil {
 		return "", time.Time{}, "", err
@@ -52,7 +54,7 @@ func (a *Auth) CreateRegistrationInvite(ctx context.Context, adminID uuid.UUID, 
 	}
 	token := hex.EncodeToString(raw)
 	expiresAt = time.Now().Add(ttl)
-	_, err = a.repo.InsertRegistrationInvite(ctx, hashRefreshToken(token), lockedEmail, expiresAt, adminID)
+	_, err = a.repo.InsertRegistrationInvite(ctx, hashRefreshToken(token), lockedEmail, superuser, expiresAt, adminID)
 	if err != nil {
 		return "", time.Time{}, "", err
 	}

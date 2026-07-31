@@ -1,172 +1,138 @@
 # auth-master
 
-Сервис аутентификации и авторизации на Go: REST (chi), PostgreSQL, JWT (access + refresh с ротацией signing keys), роли и запросы ролей, email OTP (в т.ч. step-up 2FA по REST), политика паролей, Swagger UI, метрики Prometheus.
+A demonstration authentication and authorization service with a Go REST API,
+PostgreSQL, JWT access/refresh sessions, email OTP, passwordless magic links,
+registration invites, multi-parent RBAC, Swagger, Prometheus metrics, and a
+framework-free TypeScript SPA.
 
-## Требования
+## Requirements
 
-- Go 1.25+
-- **Podman** или **Docker** + **Compose** — для Postgres/Mailpit, сборки образа и интеграционных тестов в `docker-compose.test.yml`
-- Node 20+ (для фронтенда в `web/`)
+- Go 1.24 or newer
+- Podman or Docker with Compose
+- Node.js 20 or newer
+- GNU Make
 
-## Разработка бэкенда и CI
-
-- Локально: `make check` (форматирование, `golangci-lint`, `go test ./...`). Установка линтера: `make lint-go-install`.
-- **После любых изменений в бэкенде** (`cmd/`, `internal/`, `tools/`, `go.mod`) обязательно прогоните интеграцию и coverage gate **в контейнере** (как в GitHub Actions):
-  - `make docker-test-integration` или `docker compose -f docker-compose.test.yml run --rm test-integration`
-  - с Podman: `make podman-test-integration` или `podman compose -f docker-compose.test.yml run --rm test-integration`
-- Правила для агента Cursor: `.cursor/rules/backend-quality.mdc`.
-
-## Быстрый старт
-
-1. Скопируйте переменные окружения:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Поднимите Postgres, Mailpit и бэкенд `authd` (все сервисы читают `.env` через `env_file`; у `authd` в compose переопределены `DATABASE_URL` и `SMTP_HOST` на хосты `postgres` и `mailpit`):
-
-   ```bash
-   podman compose up -d
-   ```
-
-   HTTP: `http://localhost:${HTTP_PORT:-8080}`.
-
-3. Либо поднимите только инфраструктуру и запускайте API с хоста:
-
-   ```bash
-   podman compose up -d postgres mailpit
-   go run ./cmd/authd
-   ```
-
-По умолчанию HTTP слушает адрес из `HTTP_ADDR`. Миграции схемы выполняются при старте через **GORM AutoMigrate** и вспомогательный SQL (enum-типы, частичные уникальные индексы, ограничения `CHECK`).
-
-## Образ бэкенда (production)
-
-Сборка: в Dockerfile используются cache mounts (`RUN --mount=type=cache,...`); **Podman** и **Docker с BuildKit** их подхватывают при пересборке.
+## Quick start
 
 ```bash
-podman build -t authd:local .
+cp .env.example .env
+make install
+make up
 ```
 
-(Эквивалент с Docker: `DOCKER_BUILDKIT=1 docker build -t authd:local .`)
+The backend and SPA are available at `http://localhost:8080`, Swagger UI at
+`http://localhost:8080/swagger/`, and Mailpit at `http://localhost:8025`.
 
-Итоговый слой — **`scratch`** + статический бинарник (`CGO_ENABLED=0`, `-ldflags="-s -w"`, `-trimpath`) и системный пакет CA для TLS к Postgres/SMTP. Запуск:
+For local development, run these commands in separate terminals:
 
 ```bash
-podman run --rm -p 8080:8080 --env-file .env authd:local
+make dev
+make web-dev
 ```
 
-Переменные из `.env` должны задавать `DATABASE_URL`, секреты и адреса прослушивания так же, как при локальном `go run`.
+Compose is selected automatically (Podman first, then Docker). Override it when
+needed: `make up COMPOSE='docker compose'`.
 
-Кросс-сборка (пример):
+## Security model
 
-```bash
-podman build --arch arm64 --os linux -t authd:arm64 .
+- Passwords require upper- and lowercase letters, a number, and a special
+  character. Password history and Levenshtein similarity checks prevent reuse.
+- Login is password plus a single-use email OTP challenge. An incorrect OTP
+  consumes the challenge.
+- Password changes require the current password and a separate email OTP.
+- Magic links are single-use, time-limited passwordless login tokens stored as
+  hashes.
+- Refresh tokens rotate and are scoped to a stable browser device identifier.
+- Signing keys can rotate; clients transparently refresh stale access tokens.
+- State-changing cookie-authenticated requests use CSRF protection.
+
+All configuration variables and defaults are documented in `.env.example` and
+`internal/config/config.go`.
+
+## Multi-parent role mounting
+
+Roles form a directed acyclic graph instead of a single-parent tree. A role can
+be mounted under any number of parent roles. Membership and `role_admin`
+authority flow downward through every parent path:
+
+```text
+engineering ─┐
+             ├─> release-manager
+operations ──┘
 ```
 
-## Compose: тесты в контейнере (Docker / Podman)
+A member of either parent has `release-manager`; an administrator of either
+parent can manage it. Authority never flows upward or sideways.
 
-Файл `docker-compose.test.yml` рассчитан на **`podman compose`**: тома для кэша модулей и сборки Go.
+Mount edges live in `role_mounts(child_role_id, parent_role_id)`. Recursive
+queries evaluate inheritance live, stop at depth 64, and avoid revisiting a role
+within a path. A mount that would create a cycle is rejected. During migration,
+legacy `roles.parent_id` values are copied into `role_mounts`.
 
-- **`test-integration`** — Postgres в том же compose, `INTEGRATION_DATABASE_URL`, сокет OCI не нужен.
-- **`test`** — интеграционные тесты через Testcontainers: в контейнер монтируется сокет Podman (`PODMAN_SOCKET` → `/var/run/docker.sock`). Цель `make podman-test` сама берёт путь из `podman info`, иначе задайте вручную:
+Relevant endpoints:
 
-```bash
-export PODMAN_SOCKET="${XDG_RUNTIME_DIR}/podman/podman.sock"
-# или: export PODMAN_SOCKET="$(podman info -f '{{.Host.RemoteSocket.Path}}')"
-```
+- `GET /v1/roles` — list roles and all `ParentIDs`.
+- `POST /v1/roles/{roleID}/mounts` — add a parent without replacing other mounts.
+- `DELETE /v1/roles/{roleID}/mounts/{parentID}` — remove one mount.
+- `PATCH /v1/roles/{roleID}/parent` — compatibility endpoint that replaces all
+  mounts with zero or one parent.
+- `GET /v1/me/has-role?role_name=...` — resolve direct or inherited membership.
+- `GET /v1/roles/{roleID}/members` — list direct active members.
 
-```bash
-podman compose -f docker-compose.test.yml run --rm test
-podman compose -f docker-compose.test.yml run --rm test-integration
-podman compose -f docker-compose.test.yml run --rm test-coverage
-```
+Deleting a role removes its memberships and requests. Its direct children are
+mounted under each of its direct parents before the deleted role's edges are
+removed, preserving reachability where possible.
 
-Через Makefile:
+## SPA
 
-```bash
-make podman-test
-make podman-test-integration
-```
+`web/` is a Vite/TypeScript demonstration client without a UI framework. It
+shows login and email OTP, password reset, magic-link login, multi-account
+switching, session management, invites, signing-key rotation, and RBAC.
 
-Локально без Compose интеграционные тесты ожидают работающий **`podman info`** или **`docker info`** (см. `internal/testutil`). При rootless Podman часто помогает:
+The Roles page lists every parent mount. Superusers can mount a role under
+additional parents or remove individual mounts. Role managers can manage
+members and pending membership requests.
 
-```bash
-export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock"
-```
+The client keeps access tokens in memory and restores sessions using refresh
+tokens. The demo's multi-account support stores per-account refresh tokens in
+local storage; a production browser application should prefer a server-managed
+HttpOnly design to reduce XSS exposure.
 
-`-race` в compose не включён (нужен CGO); гонку удобнее запускать на хосте: `go test ./... -race`.
+## Tests and quality gates
 
-## Переменные окружения
+Run every check through `make`:
 
-См. `.env.example`: строка подключения к БД (`DATABASE_URL`), ключи шифрования истории паролей и мастер-ключ подписи JWT, SMTP, TTL токенов, лимиты сессий и политика паролей.
+| Command | Purpose |
+| --- | --- |
+| `make lint` | Go formatting, vet, golangci-lint, ESLint, and TypeScript checks |
+| `make test-unit` | Fast Go tests without PostgreSQL |
+| `make test-race` | Unit tests with Go's race detector |
+| `make test-integration` | PostgreSQL integration tests and the coverage gate |
+| `make test-e2e` | Playwright browser tests against a real stack |
+| `make check` | Fast pre-merge lint and integration gate |
+| `make test` | Complete suite with a final per-group summary |
 
-## Фронтенд
+Every feature must include automated tests, including E2E coverage for visible
+behavior. See [AGENTS.md](AGENTS.md) and [web/e2e/README.md](web/e2e/README.md).
 
-```bash
-cd web && npm ci && npm run dev
-```
+## OpenAPI
 
-Сборка статики:
-
-```bash
-make web-build
-```
-
-## Тесты и покрытие
-
-```bash
-make test
-```
-
-Интеграционные тесты используют Testcontainers (нужен **Podman** или Docker с доступным API). Чтобы пропустить их:
-
-```bash
-SKIP_TESTCONTAINERS=1 go test ./... -count=1
-```
-
-Проверка, что суммарное покрытие пакетов `./internal/...` не ниже **70%** (с учётом интеграционных тестов):
-
-```bash
-make test-integration
-```
-
-Цель `test-integration` запускает `go test -tags=covgate ./internal/covgate`. Сначала выполняется пробный запуск Postgres через Testcontainers: если контейнер не поднимается (в т.ч. при ошибке провайдера вроде «rootless Docker not found»), порог **пропускается** (`Skip`), чтобы `make test-integration` не ломал локальную среду без рабочего OCI. В CI, где Docker обязателен, задайте **`REQUIRE_COVERAGE_GATE=1`**: тогда отсутствие контейнера даст **ошибку**, а не пропуск.
-
-Для ручной оценки покрытия без порога:
-
-```bash
-go test $(go list ./internal/...) -count=1 -coverprofile=c.out \
-  -coverpkg=$(go list ./internal/... | paste -sd, -)
-go tool cover -func=c.out
-```
-
-## OpenAPI / Swagger
-
-Спецификация **генерируется** утилитой [swag](https://github.com/swaggo/swag) из комментариев над обработчиками в `internal/transport/http` и общих настроек в `cmd/authd/main.go`. В репозиторий коммитятся сгенерированные `docs/docs.go`, `docs/swagger.json`, `docs/swagger.yaml`.
-
-Пересборка:
+Handler annotations generate `docs/docs.go`, `docs/swagger.json`, and
+`docs/swagger.yaml`. After changing routes or request/response types, run:
 
 ```bash
 make swagger
 ```
 
-(эквивалент: `go run github.com/swaggo/swag/cmd/swag@v1.16.4 init -g cmd/authd/main.go -o docs --parseInternal`)
+## Project layout
 
-UI: после `go run ./cmd/authd` откройте `http://localhost:8080/swagger/index.html` (или ваш `HTTP_ADDR`). В спецификации `basePath` равен `/`, пути API указаны полностью, например `/v1/auth/login`.
-
-## Структура
-
-- `cmd/authd` — точка входа
-- `internal/config` — конфигурация (cleanenv)
-- `internal/repository` — доступ к БД (**GORM**)
-- `internal/migrate` — открытие БД и вызов миграций
-- `internal/testutil` — общие проверки для тестов (наличие Podman/Docker)
-- `internal/service` — доменная логика
-- `internal/transport/http` — REST API
-- `web/` — Vite + TypeScript клиент
-
-## Моки в тестах
-
-Для изоляции слоя сервиса удобно ввести интерфейс над методами `repository.Store` и использовать, например, `github.com/stretchr/testify/mock` или ручные фейки; в репозитории сейчас основной упор на интеграционные тесты с реальной Postgres через Testcontainers.
+- `cmd/authd` — process entry point and API metadata.
+- `internal/config` — environment configuration.
+- `internal/domain` — domain data types.
+- `internal/repository` — PostgreSQL persistence and migrations.
+- `internal/service` — authentication and authorization rules.
+- `internal/transport/http` — REST transport and middleware.
+- `internal/testutil` — integration-test infrastructure.
+- `web/src` — SPA source.
+- `web/e2e` — Playwright tests.
+- `docs` — generated OpenAPI artifacts.

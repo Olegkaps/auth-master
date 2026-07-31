@@ -6,6 +6,7 @@ export default defineConfig({
     proxy: {
       '/v1': { target: 'http://localhost:8080', changeOrigin: true },
       '/healthz': { target: 'http://localhost:8080', changeOrigin: true },
+      '/swagger': { target: 'http://localhost:8080', changeOrigin: true },
     },
   },
 })

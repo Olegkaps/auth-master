@@ -1,23 +1,36 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
   enable:
-    - errcheck
-    - gofmt
-    - govet
-    - ineffassign
     - misspell
-    - staticcheck
-    - unused
-
-linters-settings:
-  staticcheck:
-    checks: ["all", "-ST1000"]
-
-issues:
-  exclude-rules:
-    # Пустые функции — только для swag @Router-документации
-    - path: internal/transport/http/swagger_system\.go
-      linters: [unused]
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1000  # Do not require a package doc comment.
+        - -QF1001  # De Morgan quick-fixes do not necessarily improve readability.
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - unused
+        path: internal/transport/http/swagger_system\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

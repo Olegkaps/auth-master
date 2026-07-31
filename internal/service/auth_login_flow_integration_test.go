@@ -21,22 +21,27 @@ func TestIntegration_LoginOTPAndRefresh(t *testing.T) {
 	require.NoError(t, a.EnsureBootstrap(ctx))
 
 	inv := seedSuperInvite(t, a, repo, ctx)
-	uid, err := a.Register(ctx, inv, "flow", "flow@test.dev", "secret-pass-1")
+	uid, err := a.Register(ctx, inv, "flow", "flow@test.dev", "Secret-Pass-1!")
 	require.NoError(t, err)
 
 	_, err = a.LoginPassword(ctx, "flow", "wrong", nil)
 	require.Error(t, err)
 
-	res, err := a.LoginPassword(ctx, "flow", "secret-pass-1", nil)
+	res, err := a.LoginPassword(ctx, "flow", "Secret-Pass-1!", nil)
 	require.NoError(t, err)
 	require.True(t, res.OTPRequired)
+	require.NotEmpty(t, res.LoginChallenge)
+
+	// A leaked code without the challenge is rejected (true second factor).
+	_, _, err = a.LoginVerifyOTP(ctx, "", "424242", "device-a", "phone")
+	require.ErrorIs(t, err, ErrOTPInvalid)
 
 	code := "424242"
 	chash := hashOTP(a.otpPepper, code)
-	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPLogin, chash, time.Now().Add(time.Minute), nil)
+	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPLogin, chash, time.Now().Add(time.Minute), &res.LoginChallenge)
 	require.NoError(t, err)
 
-	tokens, u, err := a.LoginVerifyOTP(ctx, "flow", code, "device-a", "phone")
+	tokens, u, err := a.LoginVerifyOTP(ctx, res.LoginChallenge, code, "device-a", "phone")
 	require.NoError(t, err)
 	require.NotNil(t, tokens)
 	require.NotNil(t, u)

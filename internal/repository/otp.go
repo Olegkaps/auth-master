@@ -27,6 +27,7 @@ func (s *Store) CreateEmailOTP(ctx context.Context, userID uuid.UUID, purpose do
 type OTPRow struct {
 	ID           uuid.UUID
 	UserID       uuid.UUID
+	Purpose      domain.OTPPurpose
 	CodeHash     []byte
 	ExpiresAt    time.Time
 	ConsumedAt   *time.Time
@@ -68,7 +69,7 @@ func (s *Store) GetOTPByCorrelation(ctx context.Context, correlation string) (*O
 
 func otpRow(m *emailOTPModel) *OTPRow {
 	return &OTPRow{
-		ID: m.ID, UserID: m.UserID, CodeHash: m.CodeHash, ExpiresAt: m.ExpiresAt,
+		ID: m.ID, UserID: m.UserID, Purpose: domain.OTPPurpose(m.Purpose), CodeHash: m.CodeHash, ExpiresAt: m.ExpiresAt,
 		ConsumedAt: m.ConsumedAt, AttemptCount: m.AttemptCount, Correlation: m.CorrelationID,
 	}
 }

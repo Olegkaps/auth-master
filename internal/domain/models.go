@@ -37,7 +37,13 @@ type Role struct {
 	ID          uuid.UUID
 	Name        string
 	Description string
-	CreatedAt   time.Time
+	// ParentIDs contains every role this role is mounted under. Membership and
+	// role-administrator authority are inherited from every ancestor.
+	ParentIDs []uuid.UUID
+	// ParentID is a compatibility view of the first mount. New code must use
+	// ParentIDs because a role can have multiple parents.
+	ParentID  *uuid.UUID
+	CreatedAt time.Time
 }
 
 type UserRole struct {

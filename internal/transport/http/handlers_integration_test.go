@@ -3,6 +3,7 @@ package httptransport
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -88,7 +89,7 @@ func seedRegistrationInvite(t *testing.T, a *service.Auth, repo repository.Repos
 	aid, err := repo.CreateHumanUser(ctx, "invite-admin-http", "invadminhttp@test.dev", "bootstrap-placeholder-hash")
 	require.NoError(t, err)
 	require.NoError(t, repo.SetSuperuser(ctx, aid, true))
-	raw, _, _, err := a.CreateRegistrationInvite(ctx, aid, nil, time.Hour)
+	raw, _, _, err := a.CreateRegistrationInvite(ctx, aid, nil, false, time.Hour)
 	require.NoError(t, err)
 	return raw
 }
@@ -155,7 +156,7 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 	require.Equal(t, true, prev["valid"])
 
 	// Register + promote to superuser (admin HTTP routes).
-	regBody := fmt.Sprintf(`{"invite_token":%q,"login":"httpuser","email":"httpuser@test.dev","password":"password-one"}`, inv)
+	regBody := fmt.Sprintf(`{"invite_token":%q,"login":"httpuser","email":"httpuser@test.dev","password":"Password-One1!"}`, inv)
 	r, err = client.Post(base+"/v1/auth/register", "application/json", strings.NewReader(regBody))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, r.StatusCode)
@@ -168,20 +169,26 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, repo.SetSuperuser(ctx, uid, true))
 
-	loginBody := `{"login":"httpuser","password":"password-one"}`
+	loginBody := `{"login":"httpuser","password":"Password-One1!"}`
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/auth/login", strings.NewReader(loginBody))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-For", "203.0.113.1")
 	r, err = client.Do(req)
 	require.NoError(t, err)
+	var loginOut struct {
+		OTPSent        bool   `json:"otp_sent"`
+		LoginChallenge string `json:"login_challenge"`
+	}
+	require.NoError(t, json.NewDecoder(r.Body).Decode(&loginOut))
 	require.NoError(t, r.Body.Close())
 	require.Equal(t, http.StatusOK, r.StatusCode)
+	require.NotEmpty(t, loginOut.LoginChallenge)
 
-	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPLogin, a.IntegrationOTPHash("555555"), time.Now().Add(time.Minute), nil)
+	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPLogin, a.IntegrationOTPHash("555555"), time.Now().Add(time.Minute), &loginOut.LoginChallenge)
 	require.NoError(t, err)
 
-	verifyBody := `{"login":"httpuser","code":"555555","device_id":"dev-http","device_label":"test"}`
+	verifyBody := fmt.Sprintf(`{"challenge":%q,"code":"555555","device_id":"dev-http","device_label":"test"}`, loginOut.LoginChallenge)
 	r, err = client.Post(base+"/v1/auth/login/verify-otp", "application/json", strings.NewReader(verifyBody))
 	require.NoError(t, err)
 	sessionCookies := r.Cookies()
@@ -265,12 +272,14 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 	// New login session for RBAC / admin tests (logout cleared refresh).
 	r, err = client.Post(base+"/v1/auth/login", "application/json", strings.NewReader(loginBody))
 	require.NoError(t, err)
+	require.NoError(t, json.NewDecoder(r.Body).Decode(&loginOut))
 	require.NoError(t, r.Body.Close())
 	require.Equal(t, http.StatusOK, r.StatusCode)
-	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPLogin, a.IntegrationOTPHash("444444"), time.Now().Add(time.Minute), nil)
+	require.NotEmpty(t, loginOut.LoginChallenge)
+	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPLogin, a.IntegrationOTPHash("444444"), time.Now().Add(time.Minute), &loginOut.LoginChallenge)
 	require.NoError(t, err)
 	r, err = client.Post(base+"/v1/auth/login/verify-otp", "application/json",
-		strings.NewReader(`{"login":"httpuser","code":"444444","device_id":"dev2","device_label":"x"}`))
+		strings.NewReader(fmt.Sprintf(`{"challenge":%q,"code":"444444","device_id":"dev2","device_label":"x"}`, loginOut.LoginChallenge)))
 	require.NoError(t, err)
 	sessionCookies = r.Cookies()
 	require.NoError(t, json.NewDecoder(r.Body).Decode(&tokOut))
@@ -318,10 +327,57 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
+		// Hierarchy: create a child role, adjust parent, and reject a cycle.
+		childBody := fmt.Sprintf(`{"name":"http-child","description":"c","parent_id":%q}`, rid)
+		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(childBody)), nil)
+		var childCreated map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&childCreated))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusCreated, r.StatusCode)
+		childID := childCreated["role_id"]
+		require.NotEmpty(t, childID)
+
+		r = do(http.MethodPatch, "/v1/roles/"+childID+"/parent", bytes.NewReader([]byte(`{"parent_id":""}`)), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusNoContent, r.StatusCode)
+
+		r = do(http.MethodPatch, "/v1/roles/"+childID+"/parent", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, rid))), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusNoContent, r.StatusCode)
+
+		// Add and remove a second mount without replacing the first one.
+		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(`{"name":"http-parent-two","description":"p2"}`)), nil)
+		var parentTwo map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&parentTwo))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusCreated, r.StatusCode)
+		parentTwoID := parentTwo["role_id"]
+		r = do(http.MethodPost, "/v1/roles/"+childID+"/mounts", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, parentTwoID))), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusNoContent, r.StatusCode)
+		r = do(http.MethodDelete, "/v1/roles/"+childID+"/mounts/"+parentTwoID, nil, nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusNoContent, r.StatusCode)
+
+		// rid under its own child would be a cycle → 400.
+		r = do(http.MethodPatch, "/v1/roles/"+rid+"/parent", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, childID))), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusBadRequest, r.StatusCode)
+
 		assignBody := fmt.Sprintf(`{"user_id":%q,"level":"member"}`, uid.String())
 		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(assignBody)), nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+
+		// List members (admins first, enriched with login/email).
+		r = do(http.MethodGet, "/v1/roles/"+rid+"/members", nil, nil)
+		var mem struct {
+			Members []map[string]any `json:"members"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&mem))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		require.NotEmpty(t, mem.Members)
 
 		r = do(http.MethodGet, "/v1/me/has-role?role_name=http-role", nil, nil)
 		var has map[string]bool
@@ -336,25 +392,66 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 
 		peerID, err := repo.CreateHumanUser(ctx, "peer-http", "peerhttp@test.dev", "x")
 		require.NoError(t, err)
+		// httpuser is a superuser (manager) → the request is auto-granted, no approval.
 		reqBody := fmt.Sprintf(`{"target_user_id":%q}`, peerID.String())
 		r = do(http.MethodPost, "/v1/roles/"+rid+"/requests", bytes.NewReader([]byte(reqBody)), nil)
 		var reqOut map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqOut))
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusCreated, r.StatusCode)
-		reqID := reqOut["request_id"]
+		require.Equal(t, "granted", reqOut["status"])
+
+		// Seed a pending request from a non-manager, then approve it as the superuser.
+		ridUUID, err := uuid.Parse(rid)
+		require.NoError(t, err)
+		pendingID, err := repo.CreateRoleRequest(ctx, peerID, peerID, ridUUID)
+		require.NoError(t, err)
 
 		r = do(http.MethodGet, "/v1/roles/"+rid+"/requests", nil, nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusOK, r.StatusCode)
 
-		r = do(http.MethodPost, "/v1/role-requests/"+reqID+"/decide", bytes.NewReader([]byte(`{"approve":true}`)), nil)
+		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":true}`)), nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
 		r = do(http.MethodDelete, "/v1/roles/"+rid+"/members/"+uid.String(), nil, nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+	})
+
+	// A service can verify a caller's token and then authorize by role — both over
+	// the API: introspect the JWT, then check has-role.
+	t.Run("verify_token_then_check_role", func(t *testing.T) {
+		roleID, err := repo.CreateRole(ctx, "gate-role", "", nil)
+		require.NoError(t, err)
+		require.NoError(t, repo.AssignUserRole(ctx, uid, roleID, domain.RoleMember, &uid, time.Now(), nil))
+
+		// 1) Verify the token (introspection) → identifies the subject.
+		r := do(http.MethodGet, "/v1/auth/token/info", nil, nil)
+		var info struct {
+			Subject string `json:"subject"`
+			Typ     string `json:"typ"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&info))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		require.Equal(t, uid.String(), info.Subject)
+		require.Equal(t, "access", info.Typ)
+
+		// 2) Authorize by role.
+		r = do(http.MethodGet, "/v1/me/has-role?role_name=gate-role", nil, nil)
+		var has map[string]bool
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&has))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		require.True(t, has["has_role"])
+
+		r = do(http.MethodGet, "/v1/me/has-role?role_name=not-a-role", nil, nil)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&has))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		require.False(t, has["has_role"])
 	})
 
 	t.Run("sessions_password_stepup_signing", func(t *testing.T) {
@@ -390,7 +487,20 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, r2.Body.Close())
 		require.Equal(t, http.StatusNoContent, r2.StatusCode)
 
-		r = do(http.MethodPost, "/v1/auth/password", bytes.NewReader([]byte(`{"old_password":"password-one","new_password":"password-two"}`)), nil)
+		// Password change requires 2FA: start (emails a code) then submit with it.
+		r = do(http.MethodPost, "/v1/auth/password/2fa", nil, nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPPasswordChange, a.IntegrationOTPHash("321321"), time.Now().Add(time.Minute), nil)
+		require.NoError(t, err)
+		// Wrong 2FA code is rejected.
+		r = do(http.MethodPost, "/v1/auth/password", bytes.NewReader([]byte(`{"old_password":"Password-One1!","new_password":"Password-Two2!","code":"000000"}`)), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode)
+		// Correct 2FA code succeeds.
+		_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPPasswordChange, a.IntegrationOTPHash("321321"), time.Now().Add(time.Minute), nil)
+		require.NoError(t, err)
+		r = do(http.MethodPost, "/v1/auth/password", bytes.NewReader([]byte(`{"old_password":"Password-One1!","new_password":"Password-Two2!","code":"321321"}`)), nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
@@ -459,5 +569,90 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		r = do(http.MethodPost, "/v1/admin/signing-keys/rotate", bytes.NewReader([]byte(`{}`)), h)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+	})
+
+	t.Run("password_reset_public", func(t *testing.T) {
+		// Unknown login: 200 with no email (no enumeration).
+		r, err := client.Post(base+"/v1/auth/password/reset/start", "application/json",
+			strings.NewReader(`{"login":"ghost-nobody"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+
+		// Missing login → 400.
+		r, err = client.Post(base+"/v1/auth/password/reset/start", "application/json", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusBadRequest, r.StatusCode)
+
+		// Real user: start, then complete with an injected OTP.
+		r, err = client.Post(base+"/v1/auth/password/reset/start", "application/json",
+			strings.NewReader(`{"login":"httpuser"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+
+		_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPPasswordChange, a.IntegrationOTPHash("246810"), time.Now().Add(time.Minute), nil)
+		require.NoError(t, err)
+
+		// Wrong code → 401.
+		r, err = client.Post(base+"/v1/auth/password/reset/complete", "application/json",
+			strings.NewReader(`{"login":"httpuser","code":"000000","new_password":"Reset!Pass01"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode)
+
+		// Correct code → 204.
+		r, err = client.Post(base+"/v1/auth/password/reset/complete", "application/json",
+			strings.NewReader(`{"login":"httpuser","code":"246810","new_password":"Reset!Pass01"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusNoContent, r.StatusCode)
+	})
+
+	t.Run("magic_link_login", func(t *testing.T) {
+		// Unknown login: 200 with no email.
+		r, err := client.Post(base+"/v1/auth/login/magic-link", "application/json", strings.NewReader(`{"login":"ghost-nobody"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+
+		// Missing login → 400.
+		r, err = client.Post(base+"/v1/auth/login/magic-link", "application/json", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusBadRequest, r.StatusCode)
+
+		// Real user: request a link (the email is sent to Mailpit), then inject a
+		// known token and complete the passwordless login.
+		r, err = client.Post(base+"/v1/auth/login/magic-link", "application/json", strings.NewReader(`{"login":"httpuser"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+
+		token := hex.EncodeToString([]byte("magic-token-0123456789-abcdef!!"))
+		_, err = repo.InsertMagicLink(ctx, a.IntegrationMagicHash(token), uid, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+
+		// Bad token → 401.
+		r, err = client.Post(base+"/v1/auth/login/magic-link/verify", "application/json",
+			strings.NewReader(`{"token":"nope","device_id":"dev-magic"}`))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode)
+
+		// Valid token → 200 with cookies + tokens.
+		r, err = client.Post(base+"/v1/auth/login/magic-link/verify", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"token":%q,"device_id":"dev-magic","device_label":"b"}`, token)))
+		require.NoError(t, err)
+		var out struct {
+			AccessToken string `json:"access_token"`
+			CSRFToken   string `json:"csrf_token"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&out))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		require.NotEmpty(t, out.AccessToken)
+		require.NotEmpty(t, out.CSRFToken)
 	})
 }

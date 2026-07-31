@@ -34,9 +34,20 @@ type roleModel struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`
 	Name        string    `gorm:"uniqueIndex;not null"`
 	Description string    `gorm:"not null;default:''"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// ParentID is retained only to migrate deployments that used the original
+	// single-parent hierarchy. New hierarchy writes use role_mounts.
+	ParentID  *uuid.UUID `gorm:"type:uuid;index"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
+
+type roleMountModel struct {
+	ChildRoleID  uuid.UUID `gorm:"type:uuid;primaryKey"`
+	ParentRoleID uuid.UUID `gorm:"type:uuid;primaryKey;index"`
+	CreatedAt    time.Time
+}
+
+func (roleMountModel) TableName() string { return "role_mounts" }
 
 func (roleModel) TableName() string { return "roles" }
 
@@ -191,6 +202,7 @@ type registrationInviteModel struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
 	TokenHash []byte    `gorm:"uniqueIndex;not null"`
 	Email     *string   `gorm:""`
+	Superuser bool      `gorm:"not null;default:false"`
 	ExpiresAt time.Time `gorm:"not null"`
 	UsedAt    *time.Time
 	CreatedBy uuid.UUID `gorm:"type:uuid;not null"`
@@ -200,6 +212,25 @@ type registrationInviteModel struct {
 func (registrationInviteModel) TableName() string { return "registration_invites" }
 
 func (m *registrationInviteModel) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == uuid.Nil {
+		m.ID = uuid.New()
+	}
+	return nil
+}
+
+// magicLinkModel is a single-use, time-limited passwordless login link.
+type magicLinkModel struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+	TokenHash []byte    `gorm:"uniqueIndex;not null"`
+	UserID    uuid.UUID `gorm:"type:uuid;not null;index"`
+	ExpiresAt time.Time `gorm:"not null"`
+	UsedAt    *time.Time
+	CreatedAt time.Time
+}
+
+func (magicLinkModel) TableName() string { return "login_magic_links" }
+
+func (m *magicLinkModel) BeforeCreate(tx *gorm.DB) error {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
 	}

@@ -30,8 +30,8 @@ func (s *Store) UpsertRefreshSession(ctx context.Context, userID uuid.UUID, devi
 	newID := uuid.New()
 	var idStr string
 	err := s.db.WithContext(ctx).Raw(`
-		INSERT INTO refresh_sessions (id, user_id, device_id, device_label, token_hash, expires_at)
-		VALUES (?,?,?,NULLIF(?,''),?,?)
+		INSERT INTO refresh_sessions (id, user_id, device_id, device_label, token_hash, expires_at, created_at)
+		VALUES (?,?,?,NULLIF(?,''),?,?, now())
 		ON CONFLICT (user_id, device_id) DO UPDATE SET
 			token_hash = EXCLUDED.token_hash,
 			expires_at = EXCLUDED.expires_at,

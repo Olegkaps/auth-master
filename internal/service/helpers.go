@@ -30,6 +30,11 @@ func (a *Auth) IntegrationOTPHash(code string) []byte {
 	return hashOTP(a.otpPepper, code)
 }
 
+// IntegrationMagicHash returns the digest stored for a raw magic-link token (integration tests).
+func (a *Auth) IntegrationMagicHash(token string) []byte {
+	return hashRefreshToken(token)
+}
+
 func randomRefreshToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {

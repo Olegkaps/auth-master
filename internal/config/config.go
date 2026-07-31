@@ -19,6 +19,7 @@ type Config struct {
 	PasswordHistoryN      int           `env:"PASSWORD_HISTORY_N" env-default:"10"`
 	OTPCodeTTL            time.Duration `env:"OTP_CODE_TTL" env-default:"10m"`
 	OTPCodeLength         int           `env:"OTP_CODE_LENGTH" env-default:"6"`
+	MagicLinkTTL          time.Duration `env:"MAGIC_LINK_TTL" env-default:"15m"`
 	MaxSessionsPerUser    int           `env:"MAX_SESSIONS_PER_USER" env-default:"10"`
 	LoginFailWindow       time.Duration `env:"LOGIN_FAIL_WINDOW" env-default:"15m"`
 	LoginFailMax          int           `env:"LOGIN_FAIL_MAX" env-default:"5"`

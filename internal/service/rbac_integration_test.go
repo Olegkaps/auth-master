@@ -24,7 +24,7 @@ func TestIntegration_RBACHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	rid, err := repo.CreateRole(ctx, "adm", "")
+	rid, err := repo.CreateRole(ctx, "adm", "", nil)
 	require.NoError(t, err)
 	require.NoError(t, repo.AssignUserRole(ctx, uid, rid, domain.RoleRoleAdmin, &uid, time.Now(), nil))
 

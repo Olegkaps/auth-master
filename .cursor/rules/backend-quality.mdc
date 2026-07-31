@@ -1,5 +1,5 @@
 ---
-description: Качество бэкенда Go — линтеры, тесты, обязательная интеграция в Compose
+description: Go backend quality — lint, tests, integration, and E2E coverage
 globs:
   - "**/*.go"
   - "go.mod"
@@ -10,22 +10,15 @@ globs:
 alwaysApply: true
 ---
 
-## После изменений в бэкенде (Go: `cmd/`, `internal/`, `tools/`, `go.mod`)
+## After backend changes
 
-1. **Линтеры и форматирование** — перед завершением задачи запусти (или эквивалент):
-   - `make fmt-check`
-   - `make lint-go` (нужен `golangci-lint`; установка: `make lint-go-install`, разовый запуск без установки: `make lint-go-run`)
+1. Run formatting and lint through `make lint`.
+2. Add automated tests for every feature or behavior change.
+3. Add or update a Playwright E2E test for every user-visible feature.
+4. Run `make test-integration` for PostgreSQL integration and coverage checks.
+5. Run `make test-e2e` for browser-visible behavior.
+6. Run `make test` for the full pre-merge suite.
+7. Do not disable or weaken `.golangci.yml` to hide a warning; fix the code.
 
-2. **Тесты на хосте**:
-   - `make test` (минимум)
-   - предпочтительно: `make test-race` или `make check` (fmt-check + vet + lint-go + test)
-
-3. **Обязательно** — полный прогон интеграции и coverage gate **в контейнере** (как в CI):
-   - `make docker-test-integration` **или**  
-     `docker compose -f docker-compose.test.yml run --rm test-integration`  
-   - с Podman: `make podman-test-integration` **или**  
-     `podman compose -f docker-compose.test.yml run --rm test-integration`
-
-   Без этого шага изменения бэкенда считаются непроверенными: поднимается Postgres, `INTEGRATION_DATABASE_URL`, выполняется `go test ./...` и covgate.
-
-4. Не отключай и не ослабляй `.golangci.yml` без явной необходимости; новые предупреждения линтера исправляй в коде, а не подавляй без причины.
+Never invoke `go test`, Playwright, Podman, or Docker directly. Use the
+repository's `make` targets.

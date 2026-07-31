@@ -57,19 +57,25 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 		r.Get("/auth/token/info", s.handleTokenValidate)
 		r.Get("/auth/token/verify-access", s.handleVerifyAccessTokenOnly)
 		r.Post("/auth/login/verify-otp", s.handleLoginVerify)
-		r.With(s.csrf).Post("/auth/refresh", s.handleRefresh)
-		r.With(s.csrf).Post("/auth/logout", s.handleLogout)
+		r.Post("/auth/login/magic-link", s.handleMagicLinkStart)
+		r.Post("/auth/login/magic-link/verify", s.handleMagicLinkVerify)
+		r.Post("/auth/password/reset/start", s.handlePasswordResetStart)
+		r.Post("/auth/password/reset/complete", s.handlePasswordResetComplete)
+		r.Post("/auth/refresh", s.handleRefresh)
+		r.Post("/auth/logout", s.handleLogout)
 		r.Post("/auth/step-up-2fa/complete", s.handleStepUp2FAComplete)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAccessJWT)
 			r.Get("/me", s.handleMe)
 			r.Get("/me/has-role", s.handleCheckRole)
+			r.Post("/auth/password/2fa", s.handleChangePassword2FAStart)
 			r.Post("/auth/password", s.handleChangePassword)
 			r.Post("/auth/step-up-2fa/start", s.handleStepUp2FAStart)
 			r.Get("/auth/step-up-2fa/status", s.handleStepUp2FAStatus)
 			r.With(s.csrf).Post("/auth/step-up-2fa/expire", s.handleStepUp2FAExpire)
 			r.Get("/sessions", s.handleListSessions)
+			r.Delete("/sessions/{sessionID}", s.handleSessionDelete)
 			r.Post("/sessions/revoke-otp", s.handleSessionRevokeOTP)
 			r.Post("/sessions/{sessionID}/revoke", s.handleSessionRevoke)
 
@@ -79,8 +85,13 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 
 			r.Get("/roles", s.handleListRoles)
 			r.Post("/roles", s.handleCreateRole)
+			r.Delete("/roles/{roleID}", s.handleDeleteRole)
 			r.Patch("/roles/{roleID}/description", s.handlePatchRole)
+			r.Patch("/roles/{roleID}/parent", s.handleSetRoleParent)
+			r.Post("/roles/{roleID}/mounts", s.handleMountRole)
+			r.Delete("/roles/{roleID}/mounts/{parentID}", s.handleUnmountRole)
 			r.Get("/users/{userID}/roles", s.handleUserRoles)
+			r.Get("/roles/{roleID}/members", s.handleListRoleMembers)
 			r.Post("/roles/{roleID}/members", s.handleAssignRole)
 			r.Delete("/roles/{roleID}/members/{userID}", s.handleRemoveRole)
 			r.Post("/roles/{roleID}/requests", s.handleRoleRequest)
@@ -120,11 +131,16 @@ func clientIP(r *http.Request) net.IP {
 	return net.ParseIP(host)
 }
 
+// csrfOK implements the double-submit-cookie check (header must equal cookie).
+func (s *Server) csrfOK(r *http.Request) bool {
+	h := r.Header.Get(s.cfg.CSRFHeaderName)
+	c, err := r.Cookie("csrf_token")
+	return err == nil && c != nil && h != "" && c.Value == h
+}
+
 func (s *Server) csrf(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get(s.cfg.CSRFHeaderName)
-		c, err := r.Cookie("csrf_token")
-		if err != nil || c == nil || h == "" || c.Value != h {
+		if !s.csrfOK(r) {
 			s.writeErr(w, http.StatusForbidden, "csrf validation failed")
 			return
 		}

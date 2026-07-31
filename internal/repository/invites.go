@@ -12,15 +12,17 @@ import (
 type RegistrationInvite struct {
 	ID        uuid.UUID
 	Email     *string
+	Superuser bool
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedBy uuid.UUID
 }
 
-func (s *Store) InsertRegistrationInvite(ctx context.Context, tokenHash []byte, email *string, expiresAt time.Time, createdBy uuid.UUID) (uuid.UUID, error) {
+func (s *Store) InsertRegistrationInvite(ctx context.Context, tokenHash []byte, email *string, superuser bool, expiresAt time.Time, createdBy uuid.UUID) (uuid.UUID, error) {
 	row := registrationInviteModel{
 		TokenHash: tokenHash,
 		Email:     email,
+		Superuser: superuser,
 		ExpiresAt: expiresAt,
 		CreatedBy: createdBy,
 	}
@@ -42,7 +44,7 @@ func (s *Store) GetValidRegistrationInviteByTokenHash(ctx context.Context, token
 		return nil, err
 	}
 	return &RegistrationInvite{
-		ID: m.ID, Email: m.Email, ExpiresAt: m.ExpiresAt, UsedAt: m.UsedAt, CreatedBy: m.CreatedBy,
+		ID: m.ID, Email: m.Email, Superuser: m.Superuser, ExpiresAt: m.ExpiresAt, UsedAt: m.UsedAt, CreatedBy: m.CreatedBy,
 	}, nil
 }
 

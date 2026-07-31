@@ -5,13 +5,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/config"
+	"github.com/olegkapshai/auth-master/internal/domain"
 	"github.com/olegkapshai/auth-master/internal/mail"
 	"github.com/olegkapshai/auth-master/internal/migrate"
 	"github.com/olegkapshai/auth-master/internal/repository"
 	"github.com/olegkapshai/auth-master/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+// changePwd2FA injects the required password-change OTP and calls ChangePassword.
+func changePwd2FA(t *testing.T, a *Auth, repo repository.Repository, ctx context.Context, uid uuid.UUID, oldPwd, newPwd string) error {
+	t.Helper()
+	code := "918273"
+	_, err := repo.CreateEmailOTP(ctx, uid, domain.OTPPasswordChange, a.IntegrationOTPHash(code), time.Now().Add(time.Minute), nil)
+	require.NoError(t, err)
+	return a.ChangePassword(ctx, uid, oldPwd, newPwd, code)
+}
 
 func testDB(t *testing.T) (repository.Repository, func()) {
 	t.Helper()
@@ -57,7 +68,7 @@ func seedSuperInvite(t *testing.T, a *Auth, repo repository.Repository, ctx cont
 	aid, err := repo.CreateHumanUser(ctx, "invite-admin", "invadmin@test.dev", "bootstrap-placeholder-hash")
 	require.NoError(t, err)
 	require.NoError(t, repo.SetSuperuser(ctx, aid, true))
-	raw, _, _, err := a.CreateRegistrationInvite(ctx, aid, nil, time.Hour)
+	raw, _, _, err := a.CreateRegistrationInvite(ctx, aid, nil, false, time.Hour)
 	require.NoError(t, err)
 	return raw
 }
@@ -72,10 +83,10 @@ func TestIntegration_RegisterAndPasswordPolicy(t *testing.T) {
 	require.NoError(t, a.EnsureBootstrap(ctx))
 
 	inv := seedSuperInvite(t, a, repo, ctx)
-	id, err := a.Register(ctx, inv, "u1", "u1@test.dev", "password-one")
+	id, err := a.Register(ctx, inv, "u1", "u1@test.dev", "Password-One1!")
 	require.NoError(t, err)
-	err = a.ChangePassword(ctx, id, "password-one", "password-two")
+	err = changePwd2FA(t, a, repo, ctx, id, "Password-One1!", "Password-Two2!")
 	require.NoError(t, err)
-	err = a.ChangePassword(ctx, id, "password-two", "password-two")
+	err = changePwd2FA(t, a, repo, ctx, id, "Password-Two2!", "Password-Two2!")
 	require.Error(t, err)
 }

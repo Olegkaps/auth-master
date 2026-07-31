@@ -53,8 +53,8 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	if inv.Email != nil && strings.TrimSpace(*inv.Email) != "" && !strings.EqualFold(email, *inv.Email) {
 		return uuid.Nil, ErrInvalidInvite
 	}
-	if len(password) < 8 {
-		return uuid.Nil, fmt.Errorf("%w: password too short", ErrPasswordPolicy)
+	if err := checkPasswordComplexity(password); err != nil {
+		return uuid.Nil, err
 	}
 	hash, err := crypto.HashPassword(password)
 	if err != nil {
@@ -67,6 +67,11 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	if err := a.appendPasswordHistory(ctx, id, password, hash); err != nil {
 		return id, err
 	}
+	if inv.Superuser {
+		if err := a.repo.SetSuperuser(ctx, id, true); err != nil {
+			return id, err
+		}
+	}
 	if err := a.repo.MarkRegistrationInviteUsed(ctx, inv.ID); err != nil {
 		return id, err
 	}
@@ -74,9 +79,11 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 }
 
 type LoginPasswordResult struct {
-	OTPRequired      bool
-	PasswordExpired  bool
-	LoginChallengeID string // empty; we use email OTP without separate challenge id — client uses login only
+	OTPRequired     bool
+	PasswordExpired bool
+	// LoginChallenge is a single-use token proving the password step succeeded;
+	// it must be presented to verify-otp together with the emailed code.
+	LoginChallenge string
 }
 
 func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net.IP) (*LoginPasswordResult, error) {
@@ -108,15 +115,20 @@ func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net
 	if err != nil {
 		return nil, err
 	}
+	// Bind the OTP to a single-use challenge issued only to whoever passed the
+	// password step. verify-otp requires this challenge, so an intercepted email
+	// code alone (without the challenge) cannot complete the login. This makes the
+	// OTP a genuine second factor rather than a standalone credential.
+	challenge := uuid.NewString()
 	chash := hashOTP(a.otpPepper, code)
 	exp := time.Now().Add(a.cfg.OTPCodeTTL)
-	if _, err := a.repo.CreateEmailOTP(ctx, u.ID, domain.OTPLogin, chash, exp, nil); err != nil {
+	if _, err := a.repo.CreateEmailOTP(ctx, u.ID, domain.OTPLogin, chash, exp, &challenge); err != nil {
 		return nil, err
 	}
 	if u.Email != nil {
 		_ = a.mail.Send([]string{*u.Email}, "Your login code", fmt.Sprintf("Code: %s (expires in %v)", code, a.cfg.OTPCodeTTL))
 	}
-	return &LoginPasswordResult{OTPRequired: true}, nil
+	return &LoginPasswordResult{OTPRequired: true, LoginChallenge: challenge}, nil
 }
 
 func (a *Auth) passwordExpired(u *domain.User) bool {
@@ -151,24 +163,33 @@ type TokenPair struct {
 	ExpiresAt    time.Time
 }
 
-func (a *Auth) LoginVerifyOTP(ctx context.Context, login, code, deviceID, deviceLabel string) (*TokenPair, *domain.User, error) {
-	login = normalizeLogin(login)
-	u, err := a.repo.GetUserByLogin(ctx, login)
-	if err != nil || u == nil {
+// LoginVerifyOTP completes the login. The challenge (from the password step)
+// identifies the pending login and gates the OTP: without it, a leaked email
+// code is useless.
+func (a *Auth) LoginVerifyOTP(ctx context.Context, challenge, code, deviceID, deviceLabel string) (*TokenPair, *domain.User, error) {
+	challenge = strings.TrimSpace(challenge)
+	if challenge == "" {
 		return nil, nil, ErrOTPInvalid
 	}
-	row, err := a.repo.GetLatestOTP(ctx, u.ID, domain.OTPLogin)
-	if err != nil || row == nil {
+	row, err := a.repo.GetOTPByCorrelation(ctx, challenge)
+	if err != nil || row == nil || row.Purpose != domain.OTPLogin {
 		return nil, nil, ErrOTPInvalid
 	}
 	if time.Now().After(row.ExpiresAt) {
 		return nil, nil, ErrOTPInvalid
 	}
 	if !otpCodesEqual(a.otpPepper, code, row.CodeHash) {
+		// Single attempt: a wrong code burns the challenge, so the client must
+		// restart from the password step (no OTP brute-forcing within the TTL).
 		_ = a.repo.IncrementOTPAttempt(ctx, row.ID)
+		_ = a.repo.ConsumeOTP(ctx, row.ID)
 		return nil, nil, ErrOTPInvalid
 	}
 	if err := a.repo.ConsumeOTP(ctx, row.ID); err != nil {
+		return nil, nil, ErrOTPInvalid
+	}
+	u, err := a.repo.GetUserByID(ctx, row.UserID)
+	if err != nil || u == nil {
 		return nil, nil, ErrOTPInvalid
 	}
 	return a.issueTokenPair(ctx, u, deviceID, deviceLabel)
@@ -207,7 +228,13 @@ func (a *Auth) issueTokenPair(ctx context.Context, u *domain.User, deviceID, dev
 	if err != nil {
 		return nil, nil, err
 	}
-	_ = a.mail.Send([]string{*u.Email}, "New sign-in", fmt.Sprintf("Account %s signed in from device %s", u.Login, deviceID))
+	if u.Email != nil {
+		device := strings.TrimSpace(deviceLabel)
+		if device == "" {
+			device = deviceID // fall back to the opaque id when no browser/UA label was sent
+		}
+		_ = a.mail.Send([]string{*u.Email}, "New sign-in", fmt.Sprintf("Account %s signed in from %s", u.Login, device))
+	}
 	return &TokenPair{AccessToken: access, RefreshToken: rawRefresh, ExpiresAt: time.Now().Add(a.cfg.AccessTokenTTL)}, u, nil
 }
 
@@ -306,7 +333,27 @@ func (a *Auth) VerifyAccessOrServiceToken(ctx context.Context, token string) (*j
 	return v, nil
 }
 
-func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
+// StartPasswordChange2FA emails a one-time code that must be supplied to
+// ChangePassword — a second factor gating the sensitive password change.
+func (a *Auth) StartPasswordChange2FA(ctx context.Context, userID uuid.UUID) error {
+	u, err := a.repo.GetUserByID(ctx, userID)
+	if err != nil || u == nil || u.Email == nil {
+		return ErrNotFound
+	}
+	code, err := randomNumericCode(a.cfg.OTPCodeLength)
+	if err != nil {
+		return err
+	}
+	exp := time.Now().Add(a.cfg.OTPCodeTTL)
+	if _, err := a.repo.CreateEmailOTP(ctx, userID, domain.OTPPasswordChange, hashOTP(a.otpPepper, code), exp, nil); err != nil {
+		return err
+	}
+	return a.mail.Send([]string{*u.Email}, "Confirm password change", fmt.Sprintf("Code: %s", code))
+}
+
+// ChangePassword changes the password after verifying the old password AND an
+// email OTP (two-factor). Start the OTP with StartPasswordChange2FA.
+func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword, code string) error {
 	u, err := a.repo.GetUserByID(ctx, userID)
 	if err != nil || u == nil || u.PasswordHash == nil {
 		return ErrNotFound
@@ -314,6 +361,18 @@ func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword
 	ok, err := crypto.VerifyPassword(oldPassword, *u.PasswordHash)
 	if err != nil || !ok {
 		return ErrInvalidCredentials
+	}
+	// Second factor: the emailed OTP.
+	row, err := a.repo.GetLatestOTP(ctx, userID, domain.OTPPasswordChange)
+	if err != nil || row == nil || time.Now().After(row.ExpiresAt) {
+		return ErrOTPInvalid
+	}
+	if !otpCodesEqual(a.otpPepper, code, row.CodeHash) {
+		_ = a.repo.IncrementOTPAttempt(ctx, row.ID)
+		return ErrOTPInvalid
+	}
+	if err := a.repo.ConsumeOTP(ctx, row.ID); err != nil {
+		return ErrOTPInvalid
 	}
 	if err := a.validateNewPassword(ctx, userID, newPassword); err != nil {
 		return err
@@ -330,6 +389,66 @@ func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword
 	}
 	if u.Email != nil {
 		_ = a.mail.Send([]string{*u.Email}, "Password changed", "Your password was changed.")
+	}
+	return nil
+}
+
+// StartPasswordReset issues an email OTP that lets an unauthenticated user set a
+// new password (forgot / expired password flow). To avoid account enumeration it
+// is a silent no-op when the login is unknown or has no email — callers should
+// always report success to the client.
+func (a *Auth) StartPasswordReset(ctx context.Context, login string) error {
+	login = normalizeLogin(login)
+	u, err := a.repo.GetUserByLogin(ctx, login)
+	if err != nil || u == nil || u.Email == nil || u.Kind != domain.UserHuman {
+		return nil
+	}
+	code, err := randomNumericCode(a.cfg.OTPCodeLength)
+	if err != nil {
+		return err
+	}
+	chash := hashOTP(a.otpPepper, code)
+	exp := time.Now().Add(a.cfg.OTPCodeTTL)
+	if _, err := a.repo.CreateEmailOTP(ctx, u.ID, domain.OTPPasswordChange, chash, exp, nil); err != nil {
+		return err
+	}
+	return a.mail.Send([]string{*u.Email}, "Reset your password", fmt.Sprintf("Code: %s", code))
+}
+
+// ResetPasswordWithOTP verifies the emailed OTP and sets a new password without
+// requiring the old one. Enforces the same password policy as ChangePassword.
+func (a *Auth) ResetPasswordWithOTP(ctx context.Context, login, code, newPassword string) error {
+	login = normalizeLogin(login)
+	u, err := a.repo.GetUserByLogin(ctx, login)
+	if err != nil || u == nil || u.Kind != domain.UserHuman {
+		return ErrOTPInvalid // do not leak whether the login exists
+	}
+	row, err := a.repo.GetLatestOTP(ctx, u.ID, domain.OTPPasswordChange)
+	if err != nil || row == nil || time.Now().After(row.ExpiresAt) {
+		return ErrOTPInvalid
+	}
+	if !otpCodesEqual(a.otpPepper, code, row.CodeHash) {
+		_ = a.repo.IncrementOTPAttempt(ctx, row.ID)
+		return ErrOTPInvalid
+	}
+	if err := a.validateNewPassword(ctx, u.ID, newPassword); err != nil {
+		return err
+	}
+	nhash, err := crypto.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	if err := a.repo.ConsumeOTP(ctx, row.ID); err != nil {
+		return ErrOTPInvalid
+	}
+	if err := a.repo.UpdatePassword(ctx, u.ID, nhash); err != nil {
+		return err
+	}
+	if err := a.appendPasswordHistory(ctx, u.ID, newPassword, nhash); err != nil {
+		return err
+	}
+	if u.Email != nil {
+		_ = a.mail.Send([]string{*u.Email}, "Password changed", "Your password was reset.")
 	}
 	return nil
 }
@@ -390,6 +509,19 @@ func (a *Auth) RevokeSessionWithOTP(ctx context.Context, userID uuid.UUID, sessi
 	}
 	sess, err := a.repo.GetRefreshByID(ctx, sessionID)
 	if err != nil || sess == nil || sess.UserID != userID {
+		return ErrNotFound
+	}
+	return a.repo.RevokeRefreshSession(ctx, sessionID)
+}
+
+// RevokeOwnSession revokes one of the caller's own refresh sessions directly
+// (no OTP) — the caller is already authenticated with a valid access token.
+func (a *Auth) RevokeOwnSession(ctx context.Context, userID, sessionID uuid.UUID) error {
+	sess, err := a.repo.GetRefreshByID(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil || sess.UserID != userID {
 		return ErrNotFound
 	}
 	return a.repo.RevokeRefreshSession(ctx, sessionID)

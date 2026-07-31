@@ -1,168 +1,147 @@
 # =============================================================================
 # auth-master — Makefile
 # =============================================================================
-# Обязательная проверка бэкенда перед merge: линтеры + тесты на хосте, затем
-# интеграция и covgate в контейнере:
-#   make check && make compose-test-integration
-#   # или: podman compose -f docker-compose.test.yml run --rm test-integration
+# Run everything through make. Individual groups and the full suite:
+#
+#   make test-unit          fast Go tests without a database
+#   make test-integration   Go integration tests and coverage gate
+#   make test-e2e           Playwright UI tests with a managed stack
+#   make test               all groups with a final failure summary
+#
+# Start the project: make install, then make up (or make dev for local work).
 # =============================================================================
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
-
-# --- Compose (Docker по умолчанию; для Podman: make … COMPOSE='podman compose') ---
-COMPOSE         ?= docker compose
-COMPOSE_FILE    ?= docker-compose.test.yml
-COMPOSE_PROJECT ?=
-COMPOSE_RUN      = $(COMPOSE) $(if $(COMPOSE_PROJECT),-p $(COMPOSE_PROJECT),) -f $(COMPOSE_FILE) run --rm
-
-# --- Go / lint ---
-GOLANGCI_LINT_VER ?= v1.64.5
-GO_PACKAGES       ?= ./...
-
-# Go файлы для gofmt -check (без web/, vendor).
-GOFMT_PATHS := $(shell find cmd internal tools -name '*.go' 2>/dev/null | sort)
-
-.PHONY: help
 .DEFAULT_GOAL := help
 
-help: ## Показать цели
-	@echo "Host (локальный Go)"
-	@echo "  make fmt            gofmt -w cmd internal tools"
-	@echo "  make fmt-check      проверка форматирования"
-	@echo "  make vet            go vet"
-	@echo "  make lint / lint-go  golangci-lint (нужен бинарь или см. lint-go-install)"
-	@echo "  make test           go test ./... -count=1"
-	@echo "  make test-race      go test -race ./... -count=1"
-	@echo "  make test-integration  covgate на хосте (Testcontainers / INTEGRATION_DATABASE_URL)"
-	@echo "  make coverage       coverprofile + go tool cover"
-	@echo "  make check          fmt-check + lint-go + test"
-	@echo ""
-	@echo "Compose (интеграция + covgate в контейнере — обязательно при изменениях бэкенда)"
-	@echo "  make compose-test              сервис test (нужен PODMAN_SOCKET, см. docker-compose.test.yml)"
-	@echo "  make compose-test-integration  Postgres + полный go test + covgate"
-	@echo "  make compose-test-coverage     покрытие в контейнере"
-	@echo "  Переопределение: make compose-test-integration COMPOSE='podman compose'"
-	@echo ""
-	@echo "Алиасы: docker-test-integration, podman-test-integration, podman-test (с авто-сокетом)"
-	@echo ""
-	@echo "Прочее: run, swagger, web-*"
+# --- Compose: prefer Podman, otherwise Docker --------------------------------
+COMPOSE ?= $(shell command -v podman >/dev/null 2>&1 && echo 'podman compose' || echo 'docker compose')
+
+# --- Pinned tool versions ----------------------------------------------------
+GOLANGCI_LINT_VER ?= v2.10.1
+SWAG_VER          ?= v1.16.4
+GOTESTSUM_VER     ?= v1.13.0
+
+# gotestsum prints an actionable summary. Use PATH or run the pinned module.
+GOTESTSUM = $(shell command -v gotestsum 2>/dev/null || echo 'go run gotest.tools/gotestsum@$(GOTESTSUM_VER)')
+TESTSUM   = $(GOTESTSUM) --format testname --
+
+GOFMT_PATHS := $(shell find cmd internal tools -name '*.go' 2>/dev/null | sort)
+
+.PHONY: help install \
+	up down logs run dev web-dev \
+	test test-unit test-integration test-e2e test-race \
+	fmt fmt-check vet lint lint-go lint-ts check swagger
+
+help: ## Show this help
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 # -----------------------------------------------------------------------------
-# Форматирование и базовые проверки
+# Install everything with one command
 # -----------------------------------------------------------------------------
 
-fmt: ## gofmt -w исходников Go (cmd, internal, tools)
-	@gofmt -w $(GOFMT_PATHS)
-
-fmt-check: ## Сбой, если файлы не отформатированы
-	@if [ -z "$(GOFMT_PATHS)" ]; then echo "no Go files under cmd/internal/tools"; exit 1; fi
-	@out=$$(gofmt -l $(GOFMT_PATHS)); if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
-
-vet: ## go vet
-	go vet $(GO_PACKAGES)
+install: ## Install Go tools, web dependencies, and Playwright
+	go mod download
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VER)
+	go install github.com/swaggo/swag/cmd/swag@$(SWAG_VER)
+	go install gotest.tools/gotestsum@$(GOTESTSUM_VER)
+	@command -v npm >/dev/null 2>&1 && { cd web && npm ci --no-audit && npx playwright install chromium; } \
+		|| echo "npm not found — skipping web dependencies"
 
 # -----------------------------------------------------------------------------
-# Линтеры (Go)
+# Run the project
 # -----------------------------------------------------------------------------
 
-lint: lint-go ## Все линтеры (сейчас: Go)
+up: ## Start PostgreSQL, Mailpit, and authd through Compose
+	$(COMPOSE) up --build -d
+	@echo "authd: http://localhost:8080   swagger: http://localhost:8080/swagger/   mailpit: http://localhost:8025"
 
-lint-go: ## golangci-lint run
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		echo >&2 "golangci-lint not found. Install: make lint-go-install"; \
-		exit 1; \
-	}
-	golangci-lint run $(GO_PACKAGES)
+down: ## Stop the stack
+	$(COMPOSE) down
 
-lint-go-install: ## Установить golangci-lint в GOPATH/bin
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VER)
+logs: ## Follow stack logs
+	$(COMPOSE) logs -f
 
-lint-go-run: ## Запуск линтера без установки (медленнее, через go run)
-	go run github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VER) run $(GO_PACKAGES)
-
-# -----------------------------------------------------------------------------
-# Тесты на хосте
-# -----------------------------------------------------------------------------
-
-test: ## unit + интеграционные тесты (как получится на хосте)
-	go test $(GO_PACKAGES) -count=1
-
-test-race: ## go test -race
-	go test $(GO_PACKAGES) -count=1 -race
-
-test-integration: ## covgate (требует Docker/Podman или INTEGRATION_DATABASE_URL)
-	go test -tags=covgate ./internal/covgate -count=1
-
-coverage: ## coverprofile в корне
-	go test $(GO_PACKAGES) -count=1 -coverprofile=coverage.out
-	go tool cover -func=coverage.out | tail -8
-
-# -----------------------------------------------------------------------------
-# Compose: Docker или Podman (один интерфейс COMPOSE)
-# -----------------------------------------------------------------------------
-
-compose-test: ## Сервис test (Testcontainers внутри контейнера; нужен PODMAN_SOCKET)
-	@test -n "$${PODMAN_SOCKET:-}" || { echo >&2 "export PODMAN_SOCKET=/var/run/docker.sock  # или сокет Podman"; exit 1; }
-	$(COMPOSE_RUN) test
-
-compose-test-integration: ## Postgres + go test + covgate (обязательно для изменений бэкенда)
-	$(COMPOSE_RUN) test-integration
-
-compose-test-coverage: ## Покрытие как в CI-образе
-	$(COMPOSE_RUN) test-coverage
-
-docker-test-integration: ## То же, что compose-test-integration с docker compose
-	@$(MAKE) compose-test-integration COMPOSE='docker compose'
-
-docker-test: ## compose-test с docker compose (задайте PODMAN_SOCKET=/var/run/docker.sock при Docker Engine)
-	@$(MAKE) compose-test COMPOSE='docker compose'
-
-podman-test-integration: ## compose-test-integration с podman compose
-	@$(MAKE) compose-test-integration COMPOSE='podman compose'
-
-podman-test-coverage: ## compose-test-coverage с podman compose
-	@$(MAKE) compose-test-coverage COMPOSE='podman compose'
-
-podman-test: ## test + автоподстановка PODMAN_SOCKET для Podman
-	@command -v podman >/dev/null 2>&1 || { echo >&2 "podman: not in PATH"; exit 1; }
-	@sock="$${PODMAN_SOCKET:-}"; \
-	[ -n "$$sock" ] || sock=$$(podman info -f '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true); \
-	sock=$$(echo "$$sock" | sed 's|^unix://||'); \
-	[ -n "$$sock" ] || { echo >&2 "podman-test: set PODMAN_SOCKET or ensure podman info works"; exit 1; }; \
-	export PODMAN_SOCKET="$$sock"; \
-	$(MAKE) compose-test COMPOSE='podman compose'
-
-# -----------------------------------------------------------------------------
-# Агрегаты
-# -----------------------------------------------------------------------------
-
-check: fmt-check lint-go test ## Локальная проверка (lint включает govet; при необходимости: make vet)
-
-check-backend: check compose-test-integration ## Локально + интеграция в Compose (полный бэкенд-цикл)
-
-# -----------------------------------------------------------------------------
-# Приложение и фронт
-# -----------------------------------------------------------------------------
-
-run: ## go run ./cmd/authd
+dev: ## Start infrastructure and run the backend locally
+	$(COMPOSE) up -d postgres mailpit
+	DATABASE_URL=postgres://auth:auth@localhost:5432/auth?sslmode=disable \
+	SMTP_HOST=localhost SMTP_PORT=1025 \
+	BOOTSTRAP_SUPERUSER_LOGIN=admin BOOTSTRAP_SUPERUSER_EMAIL=admin@localhost \
+	BOOTSTRAP_SUPERUSER_PASSWORD='Adm1n!Passw0rd123' \
 	go run ./cmd/authd
 
-swagger: ## OpenAPI (docs/docs.go, swagger.json, swagger.yaml)
-	go run github.com/swaggo/swag/cmd/swag@v1.16.4 init -g cmd/authd/main.go -o docs --parseInternal
+run: dev ## Alias for make dev
 
-web-install:
-	@command -v npm >/dev/null 2>&1 || { echo >&2 "npm: not in PATH, skip web-install"; exit 0; }
-	cd web && npm ci --no-audit
-
-web-dev:
-	@command -v npm >/dev/null 2>&1 || { echo >&2 "npm: not in PATH, skip web-dev"; exit 0; }
+web-dev: ## Start the Vite SPA server on port 5173
 	cd web && npm run dev
 
-web-preview:
-	@command -v npm >/dev/null 2>&1 || { echo >&2 "npm: not in PATH, skip web-preview"; exit 0; }
-	cd web && npm run preview
+# -----------------------------------------------------------------------------
+# Test groups and full suite
+# -----------------------------------------------------------------------------
 
-web-build:
-	@command -v npm >/dev/null 2>&1 || { echo >&2 "npm: not in PATH, skip web-build"; exit 0; }
-	cd web && npm ci --no-audit && npm run build
+test-unit: ## Run fast Go tests without a database
+	SKIP_TESTCONTAINERS=1 $(TESTSUM) ./... -count=1
+
+# Start PostgreSQL through Compose. Tests create ephemeral databases on it.
+# REQUIRE_COVERAGE_GATE=1 makes an unavailable database fail the coverage gate.
+INTEGRATION_DB_URL ?= postgres://auth:auth@localhost:5432/auth?sslmode=disable
+
+test-integration: ## Run Go integration tests and the coverage gate
+	$(COMPOSE) up -d postgres mailpit
+	@echo "==> waiting for PostgreSQL"; \
+	for _ in $$(seq 1 30); do \
+		$(COMPOSE) exec -T postgres pg_isready -U auth -d auth >/dev/null 2>&1 && break; sleep 1; \
+	done
+	INTEGRATION_DATABASE_URL='$(INTEGRATION_DB_URL)' REQUIRE_COVERAGE_GATE=1 $(TESTSUM) ./... -count=1
+	INTEGRATION_DATABASE_URL='$(INTEGRATION_DB_URL)' REQUIRE_COVERAGE_GATE=1 $(TESTSUM) -tags=covgate ./internal/covgate -count=1
+
+test-e2e: ## Run Playwright UI tests against a managed stack
+	./scripts/e2e.sh $(E2E_ARGS)
+
+# Run every group even when an earlier group fails, then print a summary.
+test: ## Run lint, race, integration, and E2E with a summary
+	@fails=""; \
+	$(MAKE) --no-print-directory lint             || fails="$$fails lint"; \
+	$(MAKE) --no-print-directory test-race        || fails="$$fails race"; \
+	$(MAKE) --no-print-directory test-integration || fails="$$fails integration"; \
+	$(MAKE) --no-print-directory test-e2e         || fails="$$fails e2e"; \
+	echo; echo "==================== SUMMARY ===================="; \
+	if [ -z "$$fails" ]; then echo "✅ all groups passed"; \
+	else echo "❌ failed groups:$$fails (details are shown above)"; exit 1; fi
+
+test-race: ## Run Go unit tests with the race detector
+	SKIP_TESTCONTAINERS=1 $(TESTSUM) -race ./... -count=1
+
+# -----------------------------------------------------------------------------
+# Lint and format checks
+# -----------------------------------------------------------------------------
+
+lint: fmt-check vet lint-go lint-ts ## Run all Go and TypeScript checks
+
+fmt: ## gofmt -w
+	@gofmt -w $(GOFMT_PATHS)
+
+fmt-check: ## Fail when Go code is not formatted
+	@out=$$(gofmt -l $(GOFMT_PATHS)); if [ -n "$$out" ]; then echo "not formatted:"; echo "$$out"; exit 1; fi
+
+vet: ## go vet
+	go vet ./...
+
+lint-go: ## Run golangci-lint
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not found — run make install"; exit 1; }
+	golangci-lint run ./...
+
+lint-ts: ## Run ESLint and TypeScript checks for web/
+	@command -v npm >/dev/null 2>&1 || { echo "npm not found — skipping TypeScript lint"; exit 0; }
+	cd web && npm run lint
+
+check: lint test-integration ## Run the fast pre-merge gate without E2E
+
+# -----------------------------------------------------------------------------
+# Swagger
+# -----------------------------------------------------------------------------
+
+swagger: ## Regenerate OpenAPI artifacts in docs/
+	go run github.com/swaggo/swag/cmd/swag@$(SWAG_VER) init -g cmd/authd/main.go -o docs --parseInternal

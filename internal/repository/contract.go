@@ -39,14 +39,21 @@ type Repository interface {
 	RevokeRefreshByHash(ctx context.Context, userID uuid.UUID, tokenHash []byte) error
 	FindRefreshByTokenHash(ctx context.Context, tokenHash []byte) (*RefreshRow, error)
 
-	CreateRole(ctx context.Context, name, description string) (uuid.UUID, error)
+	CreateRole(ctx context.Context, name, description string, parentID *uuid.UUID) (uuid.UUID, error)
 	GetRoleByName(ctx context.Context, name string) (*domain.Role, error)
 	GetRoleByID(ctx context.Context, id uuid.UUID) (*domain.Role, error)
 	ListRoles(ctx context.Context) ([]domain.Role, error)
 	UpdateRoleDescription(ctx context.Context, id uuid.UUID, description string) error
+	DeleteRole(ctx context.Context, roleID uuid.UUID) error
+	SetRoleParent(ctx context.Context, roleID uuid.UUID, parentID *uuid.UUID) error
+	MountRole(ctx context.Context, roleID, parentID uuid.UUID) error
+	UnmountRole(ctx context.Context, roleID, parentID uuid.UUID) error
+	RoleAncestors(ctx context.Context, roleID uuid.UUID) ([]uuid.UUID, error)
+	RoleHasAncestor(ctx context.Context, roleID, candidate uuid.UUID) (bool, error)
 	AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, level domain.RoleLevel, grantedBy *uuid.UUID, validFrom time.Time, validUntil *time.Time) error
 	RemoveUserRole(ctx context.Context, userID, roleID uuid.UUID) error
 	ListUserRoles(ctx context.Context, userID uuid.UUID, at time.Time) ([]domain.UserRole, error)
+	ListRoleMembers(ctx context.Context, roleID uuid.UUID, at time.Time) ([]RoleMember, error)
 	GetUserRoleLevel(ctx context.Context, userID, roleID uuid.UUID, at time.Time) (domain.RoleLevel, bool, error)
 	UserHasRoleName(ctx context.Context, userID uuid.UUID, roleName string, at time.Time) (bool, error)
 
@@ -77,9 +84,12 @@ type Repository interface {
 	DecideRoleRequest(ctx context.Context, id uuid.UUID, approved bool, decidedBy uuid.UUID) error
 	GetRoleRequest(ctx context.Context, id uuid.UUID) (*RoleRequest, error)
 
-	InsertRegistrationInvite(ctx context.Context, tokenHash []byte, email *string, expiresAt time.Time, createdBy uuid.UUID) (uuid.UUID, error)
+	InsertRegistrationInvite(ctx context.Context, tokenHash []byte, email *string, superuser bool, expiresAt time.Time, createdBy uuid.UUID) (uuid.UUID, error)
 	GetValidRegistrationInviteByTokenHash(ctx context.Context, tokenHash []byte) (*RegistrationInvite, error)
 	MarkRegistrationInviteUsed(ctx context.Context, id uuid.UUID) error
+
+	InsertMagicLink(ctx context.Context, tokenHash []byte, userID uuid.UUID, expiresAt time.Time) (uuid.UUID, error)
+	ConsumeMagicLink(ctx context.Context, tokenHash []byte) (uuid.UUID, error)
 }
 
 var _ Repository = (*Store)(nil)

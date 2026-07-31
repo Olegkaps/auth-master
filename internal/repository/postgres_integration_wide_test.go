@@ -38,7 +38,7 @@ func TestIntegration_RepoSurface(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(users), 2)
 
-	roleID, err := s.CreateRole(ctx, "r1", "d1")
+	roleID, err := s.CreateRole(ctx, "r1", "d1", nil)
 	require.NoError(t, err)
 	rn, err := s.GetRoleByName(ctx, "r1")
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestIntegration_RoleRequestApprove(t *testing.T) {
 	require.NoError(t, err)
 	b, err := s.CreateHumanUser(ctx, "rb", "rb@test.dev", "x")
 	require.NoError(t, err)
-	rid, err := s.CreateRole(ctx, "rr", "")
+	rid, err := s.CreateRole(ctx, "rr", "", nil)
 	require.NoError(t, err)
 	reqID, err := s.CreateRoleRequest(ctx, a, b, rid)
 	require.NoError(t, err)

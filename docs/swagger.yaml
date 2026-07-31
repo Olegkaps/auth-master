@@ -33,6 +33,9 @@ definitions:
     type: object
   httptransport.ChangePasswordRequestBody:
     properties:
+      code:
+        description: Code is the OTP emailed by POST /v1/auth/password/2fa.
+        type: string
       new_password:
         type: string
       old_password:
@@ -42,6 +45,10 @@ definitions:
     properties:
       email:
         type: string
+      superuser:
+        description: Superuser grants superuser access to the account registered with
+          this invite.
+        type: boolean
       ttl_seconds:
         type: integer
     type: object
@@ -60,6 +67,12 @@ definitions:
         type: string
       name:
         type: string
+      parent_id:
+        type: string
+      parent_ids:
+        items:
+          type: string
+        type: array
     type: object
   httptransport.CreateRoleResponse:
     properties:
@@ -83,6 +96,11 @@ definitions:
     type: object
   httptransport.LoginOTPResponse:
     properties:
+      login_challenge:
+        description: |-
+          LoginChallenge must be sent back to verify-otp; it binds the OTP to this
+          password-verified attempt (second factor).
+        type: string
       otp_sent:
         type: boolean
     type: object
@@ -100,13 +118,38 @@ definitions:
     type: object
   httptransport.LoginVerifyRequestBody:
     properties:
+      challenge:
+        type: string
       code:
         type: string
       device_id:
         type: string
       device_label:
         type: string
+    type: object
+  httptransport.LogoutRequest:
+    properties:
+      refresh_token:
+        type: string
+    type: object
+  httptransport.MagicLinkStartRequest:
+    properties:
       login:
+        type: string
+    type: object
+  httptransport.MagicLinkStartResponse:
+    properties:
+      status:
+        example: link_sent
+        type: string
+    type: object
+  httptransport.MagicLinkVerifyRequest:
+    properties:
+      device_id:
+        type: string
+      device_label:
+        type: string
+      token:
         type: string
     type: object
   httptransport.MeResponse:
@@ -121,6 +164,31 @@ definitions:
       superuser:
         type: boolean
     type: object
+  httptransport.MountRoleRequest:
+    properties:
+      parent_id:
+        type: string
+    type: object
+  httptransport.PasswordResetCompleteRequest:
+    properties:
+      code:
+        type: string
+      login:
+        type: string
+      new_password:
+        type: string
+    type: object
+  httptransport.PasswordResetStartRequest:
+    properties:
+      login:
+        type: string
+    type: object
+  httptransport.PasswordResetStartResponse:
+    properties:
+      status:
+        example: otp_sent
+        type: string
+    type: object
   httptransport.PatchRoleRequestBody:
     properties:
       description:
@@ -131,6 +199,11 @@ definitions:
       device_id:
         type: string
       device_label:
+        type: string
+      refresh_token:
+        description: |-
+          RefreshToken lets a multi-account client refresh a specific account without
+          the cookie (non-ambient, so no CSRF header is required for this path).
         type: string
     type: object
   httptransport.RegisterCreatedResponse:
@@ -155,6 +228,8 @@ definitions:
         type: string
       expires_at:
         type: string
+      superuser:
+        type: boolean
       valid:
         type: boolean
     type: object
@@ -168,6 +243,27 @@ definitions:
         type: string
       Name:
         type: string
+      ParentIDs:
+        items:
+          type: string
+        type: array
+    type: object
+  httptransport.RoleMemberRow:
+    properties:
+      email: {}
+      level:
+        type: string
+      login:
+        type: string
+      user_id:
+        type: string
+    type: object
+  httptransport.RoleMembersResponse:
+    properties:
+      members:
+        items:
+          $ref: '#/definitions/httptransport.RoleMemberRow'
+        type: array
     type: object
   httptransport.RoleRequestCreateBody:
     properties:
@@ -177,6 +273,9 @@ definitions:
   httptransport.RoleRequestCreateResponse:
     properties:
       request_id:
+        type: string
+      status:
+        example: pending
         type: string
     type: object
   httptransport.RoleRequestRow:
@@ -247,6 +346,17 @@ definitions:
           $ref: '#/definitions/httptransport.SessionRow'
         type: array
     type: object
+  httptransport.SetRoleParentRequest:
+    properties:
+      parent_id:
+        type: string
+    type: object
+  httptransport.StatusResponse:
+    properties:
+      status:
+        example: otp_sent
+        type: string
+    type: object
   httptransport.StepUp2FACompleteRequest:
     properties:
       code:
@@ -297,6 +407,8 @@ definitions:
       csrf_token:
         type: string
       expires_at:
+        type: string
+      refresh_token:
         type: string
     type: object
   httptransport.UserRoleDTO:
@@ -485,6 +597,70 @@ paths:
       summary: Login (password step)
       tags:
       - auth
+  /v1/auth/login/magic-link:
+    post:
+      consumes:
+      - application/json
+      description: Public passwordless flow. Always returns 200 to avoid enumeration;
+        a link is emailed only when the login exists and has an email.
+      parameters:
+      - description: Login to send a link to
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.MagicLinkStartRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.MagicLinkStartResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Request a magic login link
+      tags:
+      - auth
+  /v1/auth/login/magic-link/verify:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: One-time token and device binding
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.MagicLinkVerifyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Includes csrf_token
+          schema:
+            $ref: '#/definitions/httptransport.TokenPairResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid or expired link
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Complete magic-link login
+      tags:
+      - auth
   /v1/auth/login/verify-otp:
     post:
       consumes:
@@ -520,14 +696,18 @@ paths:
       - auth
   /v1/auth/logout:
     post:
-      description: Requires X-CSRF-Token; sends refresh cookie if present (REFRESH_COOKIE_NAME,
-        default refresh_token).
+      description: Revokes the session named by refresh_token in the body (multi-account,
+        non-ambient) or, if absent, the HttpOnly cookie session (requires X-CSRF-Token).
       parameters:
-      - description: Must match csrf_token cookie
+      - description: Required only for the cookie path
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
+      - description: Optional refresh_token to revoke a specific account
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/httptransport.LogoutRequest'
       responses:
         "204":
           description: No content
@@ -542,8 +722,9 @@ paths:
     post:
       consumes:
       - application/json
+      description: Requires the old password AND the email OTP from POST /v1/auth/password/2fa.
       parameters:
-      - description: Old and new password
+      - description: Old/new password and 2FA code
         in: body
         name: body
         required: true
@@ -559,7 +740,7 @@ paths:
           schema:
             $ref: '#/definitions/httptransport.ErrEnvelope'
         "401":
-          description: Invalid old password
+          description: Invalid old password or 2FA code
           schema:
             $ref: '#/definitions/httptransport.ErrEnvelope'
         "404":
@@ -569,6 +750,84 @@ paths:
       security:
       - BearerAuth: []
       summary: Change password
+      tags:
+      - auth
+  /v1/auth/password/2fa:
+    post:
+      description: Emails a one-time code that must be supplied to POST /v1/auth/password.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.StatusResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Start password change 2FA
+      tags:
+      - auth
+  /v1/auth/password/reset/complete:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Login, OTP code and new password
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.PasswordResetCompleteRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Password policy or validation
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Invalid or expired OTP
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Complete password reset (OTP)
+      tags:
+      - auth
+  /v1/auth/password/reset/start:
+    post:
+      consumes:
+      - application/json
+      description: Public forgot/expired-password flow. Always returns 200 to avoid
+        account enumeration; an email is sent only when the login exists and has an
+        email.
+      parameters:
+      - description: Login to reset
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.PasswordResetStartRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.PasswordResetStartResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Start password reset (OTP)
       tags:
       - auth
   /v1/auth/refresh:
@@ -985,7 +1244,7 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: Role name and description
+      - description: Role name, description and optional parent_id
         in: body
         name: body
         required: true
@@ -1009,6 +1268,34 @@ paths:
       security:
       - BearerAuth: []
       summary: Create role
+      tags:
+      - roles
+  /v1/roles/{roleID}:
+    delete:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Delete role
       tags:
       - roles
   /v1/roles/{roleID}/description:
@@ -1050,6 +1337,39 @@ paths:
       tags:
       - roles
   /v1/roles/{roleID}/members:
+    get:
+      description: Returns all users holding the role, admins first, with login and
+        email.
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.RoleMembersResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List role members
+      tags:
+      - roles
     post:
       consumes:
       - application/json
@@ -1114,6 +1434,109 @@ paths:
       security:
       - BearerAuth: []
       summary: Remove role membership
+      tags:
+      - roles
+  /v1/roles/{roleID}/mounts:
+    post:
+      consumes:
+      - application/json
+      description: Adds a parent edge without replacing existing mounts. Membership
+        and role-admin authority inherit through every parent path. Cycles are rejected.
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: Parent role UUID
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.MountRoleRequest'
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Mount role under parent
+      tags:
+      - roles
+  /v1/roles/{roleID}/mounts/{parentID}:
+    delete:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: Parent role UUID
+        in: path
+        name: parentID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Unmount role from parent
+      tags:
+      - roles
+  /v1/roles/{roleID}/parent:
+    patch:
+      consumes:
+      - application/json
+      description: Establishes the role hierarchy. Pass an empty parent_id to detach.
+        Rejects cycles.
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: Parent role UUID or empty to clear
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.SetRoleParentRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad id or cycle
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Set role parent
       tags:
       - roles
   /v1/roles/{roleID}/requests:
@@ -1194,6 +1617,32 @@ paths:
       security:
       - BearerAuth: []
       summary: List refresh sessions
+      tags:
+      - sessions
+  /v1/sessions/{sessionID}:
+    delete:
+      description: Immediately revokes one of your refresh sessions; you're already
+        authenticated, so no email OTP is needed.
+      parameters:
+      - description: Session UUID
+        in: path
+        name: sessionID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Revoke own session
       tags:
       - sessions
   /v1/sessions/{sessionID}/revoke:

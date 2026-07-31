@@ -1,201 +1,203 @@
 import './style.css'
+import { api, isSignedIn, onSessionChange, session, setUnauthorizedHandler } from './api'
+import { accounts, activeAccountId, bootRestore, onAccountsChange, signOutAccount, signOutAll, switchTo } from './accounts'
+import { isSuperuser } from './store'
+import { currentPath, initRouter, navigate } from './router'
+import { button, h, mountToasts, run, toast } from './ui'
+import { loginView } from './views/login'
+import { registerView } from './views/register'
+import { resetView } from './views/reset'
+import { magicView } from './views/magic'
+import { dashboardView } from './views/dashboard'
+import { rolesView } from './views/roles'
+import { sessionsView } from './views/sessions'
+import { profileView } from './views/profile'
+import { usersView } from './views/users'
+import { invitesView } from './views/invites'
+import { securityView } from './views/security'
 
-const API = ''
+const requireAuth = (): string | null => (isSignedIn() ? null : '/login')
+const requireSuper = (): string | null => (!isSignedIn() ? '/login' : isSuperuser() ? null : '/')
+// Allow /login while signed in only in "add account" mode.
+const requireAnon = (): string | null => (isSignedIn() && !window.location.hash.includes('add=1') ? '/' : null)
 
-let accessToken = ''
-let csrfToken = ''
-let deviceId = localStorage.getItem('device_id') || crypto.randomUUID()
-localStorage.setItem('device_id', deviceId)
+interface NavItem {
+  path: string
+  label: string
+  icon: string
+  admin?: boolean
+}
+const NAV: NavItem[] = [
+  { path: '/', label: 'Dashboard', icon: '▚' },
+  { path: '/roles', label: 'Roles', icon: '◆' },
+  { path: '/sessions', label: 'Sessions', icon: '⧉' },
+  { path: '/profile', label: 'Profile', icon: '☺' },
+  { path: '/admin/users', label: 'Users', icon: '⚇', admin: true },
+  { path: '/admin/invites', label: 'Invites', icon: '✉', admin: true },
+  { path: '/admin/security', label: 'Security', icon: '⚿', admin: true },
+]
 
-function el(html: string): HTMLElement {
-  const t = document.createElement('template')
-  t.innerHTML = html.trim()
-  return t.content.firstElementChild as HTMLElement
+const outlet = h('div', { class: 'outlet' })
+let navLinks: HTMLAnchorElement[] = []
+
+function navLink(n: NavItem): HTMLAnchorElement {
+  const a = h('a', { href: `#${n.path}`, class: 'nav-link', 'data-path': n.path }, h('span', { class: 'nav-icon' }, n.icon), n.label) as HTMLAnchorElement
+  navLinks.push(a)
+  return a
 }
 
-async function api(
-  path: string,
-  opts: RequestInit & { skipAuth?: boolean } = {},
-): Promise<Response> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(opts.headers as Record<string, string>),
-  }
-  if (!opts.skipAuth && accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`
-  }
-  if (csrfToken && (opts.method === 'POST' || opts.method === 'DELETE')) {
-    headers['X-CSRF-Token'] = csrfToken
-  }
-  let res = await fetch(`${API}${path}`, { ...opts, headers, credentials: 'include' })
-  if (res.headers.get('X-Token-Stale') === '1' && accessToken) {
-    const r2 = await fetch(`${API}/v1/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': csrfToken,
-      },
-      body: JSON.stringify({ device_id: deviceId }),
-    })
-    if (r2.ok) {
-      const j = await r2.json()
-      accessToken = (j as { access_token: string }).access_token
-      headers['Authorization'] = `Bearer ${accessToken}`
-      res = await fetch(`${API}${path}`, { ...opts, headers, credentials: 'include' })
-    }
-  }
-  return res
+function sidebar(): HTMLElement {
+  const su = isSuperuser()
+  navLinks = []
+  const general = NAV.filter((n) => !n.admin).map(navLink)
+  const admin = NAV.filter((n) => n.admin).map(navLink)
+
+  return h(
+    'aside',
+    { class: 'sidebar' },
+    h('div', { class: 'brand' }, h('span', { class: 'brand-mark' }, '◈'), h('span', {}, 'auth-master')),
+    h('nav', { class: 'nav' }, ...general, su ? h('div', { class: 'nav-section' }, 'Admin') : null, ...(su ? admin : [])),
+    h('a', { class: 'nav-link subtle', href: '/swagger/index.html', target: '_blank' }, h('span', { class: 'nav-icon' }, '❯'), 'Swagger API'),
+  )
 }
 
-function render() {
+function topbar(): HTMLElement {
+  const u = session.user
+  const menu = h('div', { class: 'account-menu', 'data-testid': 'account-menu' })
+  menu.hidden = true
+
+  const chip = h(
+    'button',
+    { class: 'user-chip', type: 'button', 'data-testid': 'account-chip', onclick: () => (menu.hidden = !menu.hidden) },
+    h('div', { class: 'avatar' }, (u?.login ?? '?')[0].toUpperCase()),
+    h('div', { class: 'user-meta' }, h('strong', {}, u?.login ?? '—'), h('span', { class: 'muted small' }, u?.superuser ? 'superuser' : u?.kind ?? '')),
+    h('span', { class: 'chip-caret' }, '▾'),
+  )
+
+  const list = accounts()
+  for (const a of list) {
+    const isActive = a.id === activeAccountId()
+    menu.append(
+      h(
+        'div',
+        { class: 'account-row' + (isActive ? ' active' : ''), 'data-testid': `account-${a.login}` },
+        h(
+          'button',
+          {
+            class: 'account-pick',
+            type: 'button',
+            disabled: isActive,
+            onclick: async () => {
+              menu.hidden = true
+              await run(switchTo(a.id))
+              navigate('/')
+            },
+          },
+          h('div', { class: 'avatar sm' }, a.login[0].toUpperCase()),
+          h('div', { class: 'user-meta' }, h('strong', {}, a.login), h('span', { class: 'muted small' }, a.superuser ? 'superuser' : a.kind)),
+          isActive ? h('span', { class: 'badge green' }, 'active') : null,
+        ),
+        h('button', { class: 'account-x', type: 'button', title: 'Sign out this account', onclick: () => void doSignOutOne(a.id) }, '✕'),
+      ),
+    )
+  }
+  menu.append(
+    h('div', { class: 'account-actions' },
+      button('+ Add account', () => { menu.hidden = true; navigate('/login?add=1') }, 'secondary', { class: 'btn secondary small' }),
+      button('Sign out all', () => void doSignOutAll(), 'ghost', { class: 'btn ghost small' }),
+    ),
+  )
+
+  return h(
+    'header',
+    { class: 'topbar' },
+    h('div', { class: 'crumb' }, h('span', { class: 'muted small' }, 'Demo app · adapts to your permissions')),
+    h('div', { class: 'account-wrap' }, chip, menu),
+  )
+}
+
+async function doSignOutOne(id: string): Promise<void> {
+  await signOutAccount(id, (t) => api.logout(t))
+  if (!isSignedIn()) {
+    toast('Signed out.', 'info')
+    navigate('/login')
+  } else {
+    toast('Switched account.', 'info')
+    navigate('/')
+  }
+}
+
+async function doSignOutAll(): Promise<void> {
+  await signOutAll((t) => api.logout(t))
+  toast('Signed out of all accounts.', 'info')
+  navigate('/login')
+}
+
+function paintChrome(): void {
   const root = document.querySelector<HTMLDivElement>('#app')!
-  root.innerHTML = ''
-  root.appendChild(el(`<h1>Auth</h1>`))
-
-  const login = el(`
-    <div>
-      <h2>Sign in</h2>
-      <label>Login <input type="text" id="login" autocomplete="username" /></label>
-      <label>Password <input type="password" id="password" autocomplete="current-password" /></label>
-      <button type="button" id="btn-login">Send email code</button>
-      <div class="msg" id="login-msg"></div>
-    </div>
-  `)
-  root.appendChild(login)
-
-  const otp = el(`
-    <div>
-      <h2>Email OTP</h2>
-      <label>Code <input type="text" id="otp" inputmode="numeric" /></label>
-      <button type="button" id="btn-verify">Verify & sign in</button>
-      <div class="msg" id="otp-msg"></div>
-    </div>
-  `)
-  root.appendChild(otp)
-
-  const sess = el(`
-    <section>
-      <h2>Sessions</h2>
-      <button type="button" class="secondary" id="btn-sessions">Refresh list</button>
-      <button type="button" class="secondary" id="btn-revoke-otp">Email OTP for revoke</button>
-      <ul class="sessions" id="session-list"></ul>
-      <div class="msg" id="sess-msg"></div>
-      <label>Revoke OTP <input type="text" id="revoke-otp" inputmode="numeric" /></label>
-    </section>
-  `)
-  root.appendChild(sess)
-
-  const loginMsg = login.querySelector('#login-msg')!
-  login.querySelector('#btn-login')!.addEventListener('click', async () => {
-    loginMsg.textContent = ''
-    const l = (login.querySelector('#login') as HTMLInputElement).value
-    const p = (login.querySelector('#password') as HTMLInputElement).value
-    const res = await api('/v1/auth/login', {
-      method: 'POST',
-      skipAuth: true,
-      body: JSON.stringify({ login: l, password: p }),
-    })
-    const j = await res.json().catch(() => ({}))
-    if (!res.ok) {
-      loginMsg.textContent = (j as { error?: string }).error || res.statusText
-      loginMsg.classList.add('err')
-      return
-    }
-    if ((j as { password_expired?: boolean }).password_expired) {
-      loginMsg.textContent = 'Password expired — change via API'
-      loginMsg.classList.add('err')
-      return
-    }
-    loginMsg.textContent = 'Check your email for the code.'
-    loginMsg.classList.remove('err')
-  })
-
-  const otpMsg = otp.querySelector('#otp-msg')!
-  otp.querySelector('#btn-verify')!.addEventListener('click', async () => {
-    otpMsg.textContent = ''
-    const l = (login.querySelector('#login') as HTMLInputElement).value
-    const code = (otp.querySelector('#otp') as HTMLInputElement).value
-    const res = await api('/v1/auth/login/verify-otp', {
-      method: 'POST',
-      skipAuth: true,
-      body: JSON.stringify({
-        login: l,
-        code,
-        device_id: deviceId,
-        device_label: navigator.userAgent.slice(0, 80),
-      }),
-    })
-    const j = await res.json().catch(() => ({}))
-    if (!res.ok) {
-      otpMsg.textContent = (j as { error?: string }).error || res.statusText
-      otpMsg.classList.add('err')
-      return
-    }
-    accessToken = (j as { access_token: string; csrf_token: string }).access_token
-    csrfToken = (j as { csrf_token: string }).csrf_token
-    otpMsg.textContent = 'Signed in.'
-    otpMsg.classList.remove('err')
-    loadSessions()
-  })
-
-  const sessMsg = sess.querySelector('#sess-msg')!
-  async function loadSessions() {
-    const list = sess.querySelector('#session-list')!
-    list.innerHTML = ''
-    if (!accessToken) {
-      sessMsg.textContent = 'Sign in first.'
-      return
-    }
-    const res = await api('/v1/sessions')
-    const j = await res.json().catch(() => ({}))
-    if (!res.ok) {
-      sessMsg.textContent = (j as { error?: string }).error || res.statusText
-      return
-    }
-    sessMsg.textContent = ''
-    for (const s of (j as { sessions: { id: string; device_id: string; revoked: boolean }[] }).sessions) {
-      const li = el(
-        `<li><span><code>${s.id.slice(0, 8)}</code> ${s.device_id.slice(0, 12)}… ${s.revoked ? '(revoked)' : ''}</span></li>`,
-      )
-      if (!s.revoked) {
-        const b = el(`<button type="button" class="secondary">Revoke</button>`) as HTMLButtonElement
-        b.onclick = async () => {
-          const otpVal = (sess.querySelector('#revoke-otp') as HTMLInputElement).value.trim()
-          if (!otpVal) {
-            sessMsg.textContent = 'Enter OTP from email first.'
-            return
-          }
-          const r2 = await api(`/v1/sessions/${s.id}/revoke`, {
-            method: 'POST',
-            body: JSON.stringify({ code: otpVal }),
-          })
-          if (!r2.ok) {
-            const e = await r2.json().catch(() => ({}))
-            sessMsg.textContent = (e as { error?: string }).error || 'revoke failed'
-            return
-          }
-          sessMsg.textContent = 'Revoked.'
-          loadSessions()
-        }
-        li.appendChild(b)
-      }
-      list.appendChild(li)
-    }
+  if (isSignedIn()) {
+    root.replaceChildren(h('div', { class: 'app-shell' }, sidebar(), h('div', { class: 'main' }, topbar(), h('main', { class: 'content' }, outlet))))
+  } else {
+    root.replaceChildren(h('div', { class: 'auth-wrap' }, outlet))
   }
-
-  sess.querySelector('#btn-revoke-otp')!.addEventListener('click', async () => {
-    sessMsg.textContent = ''
-    const res = await api('/v1/sessions/revoke-otp', { method: 'POST', body: '{}' })
-    if (!res.ok) {
-      const e = await res.json().catch(() => ({}))
-      sessMsg.textContent = (e as { error?: string }).error || 'failed'
-      return
-    }
-    sessMsg.textContent = 'Check email for revoke code.'
-  })
-
-  sess.querySelector('#btn-sessions')!.addEventListener('click', () => loadSessions())
+  updateActive()
 }
 
-render()
+function updateActive(): void {
+  const path = currentPath()
+  for (const a of navLinks) a.classList.toggle('active', a.dataset.path === path)
+}
+
+async function boot(): Promise<void> {
+  const root = document.querySelector<HTMLDivElement>('#app')!
+  const toastHost = h('div', { class: 'toast-host' })
+  document.body.append(toastHost)
+  mountToasts(toastHost)
+
+  // Restore the cookie-owning account (and remember any others) on reload —
+  // exactly what a real SPA would do.
+  root.replaceChildren(h('div', { class: 'boot' }, 'Loading…'))
+  await bootRestore()
+
+  onSessionChange(paintChrome)
+  onAccountsChange(paintChrome)
+  window.addEventListener('hashchange', updateActive)
+  document.addEventListener('click', (e) => {
+    // Close the account menu when clicking outside it.
+    const t = e.target as HTMLElement
+    if (!t.closest('.account-wrap')) document.querySelectorAll('.account-menu').forEach((m) => ((m as HTMLElement).hidden = true))
+  })
+  // When even the refresh token is dead, bounce to the login screen.
+  setUnauthorizedHandler(() => {
+    if (currentPath() !== '/login') {
+      toast('Session expired — please sign in again.', 'err')
+      navigate('/login')
+    }
+  })
+  paintChrome()
+
+  initRouter(outlet, [
+    { path: '/login', view: (q) => loginView(q), guard: requireAnon },
+    // Register works whether or not you're signed in (invite link → add another account).
+    { path: '/register', view: (q) => registerView(q) },
+    { path: '/reset', view: (q) => resetView(q), guard: requireAnon },
+    // Magic link works whether or not you're signed in (adds/switches account).
+    { path: '/magic', view: (q) => magicView(q) },
+    { path: '/', view: () => dashboardView(), guard: requireAuth },
+    { path: '/roles', view: () => rolesView(), guard: requireAuth },
+    { path: '/sessions', view: () => sessionsView(), guard: requireAuth },
+    { path: '/profile', view: () => profileView(), guard: requireAuth },
+    { path: '/admin/users', view: () => usersView(), guard: requireSuper },
+    { path: '/admin/invites', view: () => invitesView(), guard: requireSuper },
+    { path: '/admin/security', view: () => securityView(), guard: requireSuper },
+  ], notFoundView)
+
+  // Land somewhere sensible.
+  if (!window.location.hash) navigate(isSignedIn() ? '/' : '/login')
+}
+
+function notFoundView(): HTMLElement {
+  return h('div', { class: 'page' }, h('div', { class: 'empty' }, 'Page not found.'), button('Go home', () => navigate(isSignedIn() ? '/' : '/login'), 'secondary'))
+}
+
+void boot()

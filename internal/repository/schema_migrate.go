@@ -22,6 +22,7 @@ func MigrateDB(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&userModel{},
 		&roleModel{},
+		&roleMountModel{},
 		&userRoleModel{},
 		&signingKeyModel{},
 		&refreshSessionModel{},
@@ -31,11 +32,15 @@ func MigrateDB(db *gorm.DB) error {
 		&stepUp2FAModel{},
 		&roleRequestModel{},
 		&registrationInviteModel{},
+		&magicLinkModel{},
 	); err != nil {
 		return fmt.Errorf("automigrate: %w", err)
 	}
 
 	for _, q := range []string{
+		`INSERT INTO role_mounts (child_role_id, parent_role_id, created_at)
+		 SELECT id, parent_id, NOW() FROM roles WHERE parent_id IS NOT NULL
+		 ON CONFLICT (child_role_id, parent_role_id) DO NOTHING`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS signing_keys_one_current ON signing_keys (is_current) WHERE is_current = true`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS role_requests_one_pending ON role_requests (target_user_id, role_id) WHERE status = 'pending'`,
 	} {

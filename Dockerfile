@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Production image: static binary on scratch + CA bundle for TLS to Postgres/SMTP.
-# Build (Podman или Docker с BuildKit): podman build -t authd .  |  DOCKER_BUILDKIT=1 docker build -t authd .
+# Build with Podman or Docker BuildKit: podman build -t authd . | DOCKER_BUILDKIT=1 docker build -t authd .
 
 FROM golang:1.25-bookworm AS builder
 WORKDIR /src

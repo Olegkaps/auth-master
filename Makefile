@@ -22,6 +22,7 @@ COMPOSE ?= $(shell command -v podman >/dev/null 2>&1 && echo 'podman compose' ||
 GOLANGCI_LINT_VER ?= v2.10.1
 SWAG_VER          ?= v1.16.4
 GOTESTSUM_VER     ?= v1.13.0
+PLAYWRIGHT_INSTALL ?= npx playwright install chromium
 
 # gotestsum prints an actionable summary. Use PATH or run the pinned module.
 GOTESTSUM = $(shell command -v gotestsum 2>/dev/null || echo 'go run gotest.tools/gotestsum@$(GOTESTSUM_VER)')
@@ -32,6 +33,7 @@ GOFMT_PATHS := $(shell find cmd internal tools -name '*.go' 2>/dev/null | sort)
 .PHONY: help install \
 	up down logs run dev web-dev \
 	test test-unit test-integration test-e2e test-race \
+	test-fuzz web-build docker-build \
 	fmt fmt-check vet lint lint-go lint-ts check swagger
 
 help: ## Show this help
@@ -47,7 +49,7 @@ install: ## Install Go tools, web dependencies, and Playwright
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VER)
 	go install github.com/swaggo/swag/cmd/swag@$(SWAG_VER)
 	go install gotest.tools/gotestsum@$(GOTESTSUM_VER)
-	@command -v npm >/dev/null 2>&1 && { cd web && npm ci --no-audit && npx playwright install chromium; } \
+	@command -v npm >/dev/null 2>&1 && { cd web && npm ci --no-audit && $(PLAYWRIGHT_INSTALL); } \
 		|| echo "npm not found — skipping web dependencies"
 
 # -----------------------------------------------------------------------------
@@ -101,10 +103,11 @@ test-e2e: ## Run Playwright UI tests against a managed stack
 	./scripts/e2e.sh $(E2E_ARGS)
 
 # Run every group even when an earlier group fails, then print a summary.
-test: ## Run lint, race, integration, and E2E with a summary
+test: ## Run lint, race, fuzz, integration, and E2E with a summary
 	@fails=""; \
 	$(MAKE) --no-print-directory lint             || fails="$$fails lint"; \
 	$(MAKE) --no-print-directory test-race        || fails="$$fails race"; \
+	$(MAKE) --no-print-directory test-fuzz        || fails="$$fails fuzz"; \
 	$(MAKE) --no-print-directory test-integration || fails="$$fails integration"; \
 	$(MAKE) --no-print-directory test-e2e         || fails="$$fails e2e"; \
 	echo; echo "==================== SUMMARY ===================="; \
@@ -113,6 +116,20 @@ test: ## Run lint, race, integration, and E2E with a summary
 
 test-race: ## Run Go unit tests with the race detector
 	SKIP_TESTCONTAINERS=1 $(TESTSUM) -race ./... -count=1
+
+test-fuzz: ## Run the short deterministic CI fuzz smoke tests
+	go test ./internal/crypto -run='^$$' -fuzz=FuzzLevenshtein -fuzztime=3s
+	go test ./internal/jwtutil -run='^$$' -fuzz=FuzzParseUnverifiedClaims -fuzztime=3s
+
+# -----------------------------------------------------------------------------
+# Production builds
+# -----------------------------------------------------------------------------
+
+web-build: ## Build the production SPA bundle
+	cd web && npm run build
+
+docker-build: ## Build the production authd container image through Compose
+	$(COMPOSE) build authd
 
 # -----------------------------------------------------------------------------
 # Lint and format checks

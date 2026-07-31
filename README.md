@@ -109,8 +109,11 @@ Run every check through `make`:
 | `make test-race` | Unit tests with Go's race detector |
 | `make test-integration` | PostgreSQL integration tests and the coverage gate |
 | `make test-e2e` | Playwright browser tests against a real stack |
+| `make test-fuzz` | Short fuzz smoke tests used by CI |
 | `make check` | Fast pre-merge lint and integration gate |
 | `make test` | Complete suite with a final per-group summary |
+| `make web-build` | Production SPA build |
+| `make docker-build` | Production container-image build through Compose |
 
 Every feature must include automated tests, including E2E coverage for visible
 behavior. See [AGENTS.md](AGENTS.md) and [web/e2e/README.md](web/e2e/README.md).

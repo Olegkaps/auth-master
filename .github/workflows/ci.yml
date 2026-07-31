@@ -7,43 +7,31 @@ on:
     branches: [main]
 
 jobs:
-  backend:
+  test-and-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
-      - name: gofmt check
-        run: make fmt-check
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.5
-          args: --timeout=5m
-
-      - name: Unit tests (race)
-        run: make test-race
-
-      - name: Fuzz (short)
-        run: go test ./internal/crypto -fuzz=FuzzLevenshtein -fuzztime=3s
-
-      - name: Integration + coverage gate (Compose)
-        run: make docker-test-integration
-
-  web:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci
-        working-directory: web
-      - run: npm run build
-        working-directory: web
+
+      - name: Install pinned tools and dependencies
+        run: make install PLAYWRIGHT_INSTALL='npx playwright install --with-deps chromium'
+
+      - name: Run all lint and test groups
+        run: make test COMPOSE='docker compose'
+
+      - name: Build production SPA
+        run: make web-build
+
+      - name: Build production Docker image
+        run: make docker-build COMPOSE='docker compose'

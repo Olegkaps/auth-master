@@ -20,7 +20,8 @@ Podman, or Docker directly.
 | `make test-race` | Go unit tests with the race detector |
 | `make test-integration` | Go integration tests and coverage gate with PostgreSQL and Mailpit |
 | `make test-e2e` | Playwright UI tests with an automatically managed stack |
-| `make test` | Full lint, race, integration, and E2E suite with a final summary |
+| `make test-fuzz` | Short fuzz smoke tests used by CI |
+| `make test` | Full lint, race, fuzz, integration, and E2E suite with a final summary |
 
 Each group must print an actionable summary. Go groups use `gotestsum` and E2E
 uses Playwright's `list` reporter. `make test` runs every group even when an
@@ -38,6 +39,8 @@ refresh. See [web/e2e/README.md](web/e2e/README.md).
 | `make dev` | Start infrastructure and run the backend locally |
 | `make web-dev` | Start the Vite development server on port 5173 |
 | `make swagger` | Regenerate committed OpenAPI artifacts after API changes |
+| `make web-build` | Build the production SPA bundle |
+| `make docker-build` | Build the production authd image through Compose |
 
 `COMPOSE` selects Podman when available and Docker otherwise. Override it with,
 for example, `make up COMPOSE='docker compose'`.

@@ -35,6 +35,7 @@ refresh. See [web/e2e/README.md](web/e2e/README.md).
 | Command | Purpose |
 | --- | --- |
 | `make install` | Install Go tools, web dependencies, and Playwright Chromium |
+| `make env-file` | Create an ignored `.env` from `.env.example` if it is missing |
 | `make up` / `make down` | Start or stop PostgreSQL, Mailpit, and authd |
 | `make dev` | Start infrastructure and run the backend locally |
 | `make web-dev` | Start the Vite development server on port 5173 |
@@ -44,6 +45,9 @@ refresh. See [web/e2e/README.md](web/e2e/README.md).
 
 `COMPOSE` selects Podman when available and Docker otherwise. Override it with,
 for example, `make up COMPOSE='docker compose'`.
+
+Compose-backed targets automatically run `make env-file`, so clean CI checkouts
+do not need to commit or manually create `.env`.
 
 ## Pre-merge verification
 

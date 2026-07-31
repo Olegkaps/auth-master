@@ -33,6 +33,10 @@ make web-dev
 Compose is selected automatically (Podman first, then Docker). Override it when
 needed: `make up COMPOSE='docker compose'`.
 
+The explicit copy is optional: every Compose-backed Make target creates the
+ignored `.env` from `.env.example` when it is missing and never overwrites an
+existing developer file.
+
 ## Security model
 
 - Passwords require upper- and lowercase letters, a number, and a special

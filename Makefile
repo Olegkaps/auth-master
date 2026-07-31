@@ -30,7 +30,7 @@ TESTSUM   = $(GOTESTSUM) --format testname --
 
 GOFMT_PATHS := $(shell find cmd internal tools -name '*.go' 2>/dev/null | sort)
 
-.PHONY: help install \
+.PHONY: help install env-file \
 	up down logs run dev web-dev \
 	test test-unit test-integration test-e2e test-race \
 	test-fuzz web-build docker-build \
@@ -39,6 +39,13 @@ GOFMT_PATHS := $(shell find cmd internal tools -name '*.go' 2>/dev/null | sort)
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+
+# Compose requires env_file even when every relevant value has a default. Keep
+# developer overrides intact and bootstrap only a missing, ignored .env file.
+.env:
+	cp .env.example .env
+
+env-file: .env ## Create .env from .env.example when it is missing
 
 # -----------------------------------------------------------------------------
 # Install everything with one command
@@ -56,16 +63,20 @@ install: ## Install Go tools, web dependencies, and Playwright
 # Run the project
 # -----------------------------------------------------------------------------
 
+up: | .env
 up: ## Start PostgreSQL, Mailpit, and authd through Compose
 	$(COMPOSE) up --build -d
 	@echo "authd: http://localhost:8080   swagger: http://localhost:8080/swagger/   mailpit: http://localhost:8025"
 
+down: | .env
 down: ## Stop the stack
 	$(COMPOSE) down
 
+logs: | .env
 logs: ## Follow stack logs
 	$(COMPOSE) logs -f
 
+dev: | .env
 dev: ## Start infrastructure and run the backend locally
 	$(COMPOSE) up -d postgres mailpit
 	DATABASE_URL=postgres://auth:auth@localhost:5432/auth?sslmode=disable \
@@ -90,6 +101,7 @@ test-unit: ## Run fast Go tests without a database
 # REQUIRE_COVERAGE_GATE=1 makes an unavailable database fail the coverage gate.
 INTEGRATION_DB_URL ?= postgres://auth:auth@localhost:5432/auth?sslmode=disable
 
+test-integration: | .env
 test-integration: ## Run Go integration tests and the coverage gate
 	$(COMPOSE) up -d postgres mailpit
 	@echo "==> waiting for PostgreSQL"; \
@@ -99,6 +111,7 @@ test-integration: ## Run Go integration tests and the coverage gate
 	INTEGRATION_DATABASE_URL='$(INTEGRATION_DB_URL)' REQUIRE_COVERAGE_GATE=1 $(TESTSUM) ./... -count=1
 	INTEGRATION_DATABASE_URL='$(INTEGRATION_DB_URL)' REQUIRE_COVERAGE_GATE=1 $(TESTSUM) -tags=covgate ./internal/covgate -count=1
 
+test-e2e: | .env
 test-e2e: ## Run Playwright UI tests against a managed stack
 	./scripts/e2e.sh $(E2E_ARGS)
 
@@ -128,6 +141,7 @@ test-fuzz: ## Run the short deterministic CI fuzz smoke tests
 web-build: ## Build the production SPA bundle
 	cd web && npm run build
 
+docker-build: | .env
 docker-build: ## Build the production authd container image through Compose
 	$(COMPOSE) build authd
 

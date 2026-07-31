@@ -27,6 +27,9 @@ jobs:
       - name: Install pinned tools and dependencies
         run: make install PLAYWRIGHT_INSTALL='npx playwright install --with-deps chromium'
 
+      - name: Bootstrap Compose environment
+        run: make env-file
+
       - name: Run all lint and test groups
         run: make test COMPOSE='docker compose'
 

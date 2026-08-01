@@ -1,0 +1,24 @@
+---
+description: Go backend quality — lint, tests, integration, and E2E coverage
+globs:
+  - "**/*.go"
+  - "go.mod"
+  - "Makefile"
+  - ".golangci.yml"
+  - "docker-compose.test.yml"
+  - ".github/workflows/**"
+alwaysApply: true
+---
+
+## After backend changes
+
+1. Run formatting and lint through `make lint`.
+2. Add automated tests for every feature or behavior change.
+3. Add or update a Playwright E2E test for every user-visible feature.
+4. Run `make test-integration` for PostgreSQL integration and coverage checks.
+5. Run `make test-e2e` for browser-visible behavior.
+6. Run `make test` for the full pre-merge suite.
+7. Do not disable or weaken `.golangci.yml` to hide a warning; fix the code.
+
+Never invoke `go test`, Playwright, Podman, or Docker directly. Use the
+repository's `make` targets.

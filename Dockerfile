@@ -1,14 +1,27 @@
-FROM golang:1.21 AS builder
+# syntax=docker/dockerfile:1
+# Production image: static binary on scratch + CA bundle for TLS to Postgres/SMTP.
+# Build with Podman or Docker BuildKit: podman build -t authd . | DOCKER_BUILDKIT=1 docker build -t authd .
 
-WORKDIR /app
+FROM golang:1.25-bookworm AS builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+	--mount=type=cache,target=/root/.cache/go-build \
+	go mod download
+
 COPY . .
-RUN go mod download
-RUN CGO_ENABLED=0 GOOS=linux go build -o auth-service cmd/main.go
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN --mount=type=cache,target=/go/pkg/mod \
+	--mount=type=cache,target=/root/.cache/go-build \
+	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+	go build -trimpath -ldflags="-s -w" -o /out/authd ./cmd/authd
 
-
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-COPY --from=builder /app/auth-service .
-EXPOSE 8080 50051
-CMD ["./auth-service"]
+FROM scratch AS production
+# TLS to managed Postgres / external SMTP
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/authd /authd
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+USER 65532:65532
+ENTRYPOINT ["/authd"]

@@ -165,9 +165,21 @@
                 "summary": "List users",
                 "parameters": [
                     {
+                        "type": "string",
+                        "description": "Case-insensitive login or email substring",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Opaque keyset cursor; omit on first request",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
-                        "description": "Max users (default 100, max 500)",
-                        "name": "limit",
+                        "description": "Items per page (max 100)",
+                        "name": "page_size",
                         "in": "query"
                     }
                 ],
@@ -186,6 +198,233 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/admin/users/{userID}/ban": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Ban user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "userID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.BanUserRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Unban user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "userID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/auth/has-role": {
+            "post": {
+                "description": "Intended for another service authorizing a human caller. The user ID is derived only from the verified access token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Check a role using an access token from JSON",
+                "parameters": [
+                    {
+                        "description": "Access token and role name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.TokenHasRoleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.HasRoleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/auth/has-role-with-tag": {
+            "post": {
+                "description": "Intended for another service authorizing a human caller. Role and tag inheritance use the normal authorization rules.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Check a role tag using an access token from JSON",
+                "parameters": [
+                    {
+                        "description": "Access token, role name, and tag",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.TokenHasRoleWithTagRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.HasRoleWithTagResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
@@ -615,7 +854,7 @@
         },
         "/v1/auth/refresh": {
             "post": {
-                "description": "Requires HttpOnly refresh cookie (name from REFRESH_COOKIE_NAME, default refresh_token) and X-CSRF-Token matching the csrf_token cookie.",
+                "description": "Supply refresh_token in JSON for non-ambient body-token mode; that request requires no cookie or CSRF. If refresh_token is omitted, the HttpOnly refresh cookie is required together with X-CSRF-Token matching the csrf_token cookie.",
                 "consumes": [
                     "application/json"
                 ],
@@ -629,13 +868,12 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Must match csrf_token cookie",
+                        "description": "Required only in cookie mode; must match csrf_token cookie",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
-                        "description": "Optional device metadata",
+                        "description": "Optional device metadata and non-ambient refresh_token; omitting refresh_token selects cookie mode",
                         "name": "body",
                         "in": "body",
                         "schema": {
@@ -651,13 +889,13 @@
                         }
                     },
                     "401": {
-                        "description": "Unauthorized",
+                        "description": "Missing or invalid refresh credential",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
                     },
                     "403": {
-                        "description": "CSRF validation failed",
+                        "description": "Cookie-mode CSRF validation failed",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
@@ -1157,6 +1395,79 @@
                 }
             }
         },
+        "/v1/me/has-role-with-tag": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "Check named role and inherited tag",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role name",
+                        "name": "role_name",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Capability tag",
+                        "name": "tag",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.HasRoleWithTagResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/me/role-access": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "List effective role access for current user",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.EffectiveRoleAccessResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/role-requests/{requestID}/decide": {
             "post": {
                 "security": [
@@ -1237,6 +1548,26 @@
                     "roles"
                 ],
                 "summary": "List roles",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Case-insensitive role-name substring",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Opaque keyset cursor; omit on first request",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (max 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -1562,6 +1893,140 @@
                 }
             }
         },
+        "/v1/roles/{roleID}/members/{userID}/tags": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Grant one tag to a role membership",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "userID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Tag",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RoleTagPairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Revoke one tag from a role membership",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "userID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Tag",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RoleTagPairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/roles/{roleID}/mounts": {
             "post": {
                 "security": [
@@ -1820,6 +2285,222 @@
                 }
             }
         },
+        "/v1/roles/{roleID}/subgroups": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "List role subgroups",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Include all descendants",
+                        "name": "recursive",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RolesListResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/roles/{roleID}/tags": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Add one role tag definition",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Tag pair",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RoleTagPairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Membership grants are preserved so re-adding the definition restores authorization.",
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Delete one role tag definition",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Tag pair",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RoleTagPairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Rename one role tag and migrate its membership grants",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role UUID",
+                        "name": "roleID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CSRF token matching the csrf_token cookie",
+                        "name": "X-CSRF-Token",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Old and new tag names",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.RenameRoleTagRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/sessions": {
             "get": {
                 "security": [
@@ -2030,11 +2711,19 @@
         "httptransport.AdminUserRow": {
             "type": "object",
             "properties": {
+                "ban_reason": {
+                    "type": "string"
+                },
+                "banned_at": {
+                    "type": "string",
+                    "x-nullable": true
+                },
                 "created_at": {
                     "type": "string"
                 },
                 "email": {
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "id": {
                     "type": "string"
@@ -2053,6 +2742,16 @@
         "httptransport.AdminUsersResponse": {
             "type": "object",
             "properties": {
+                "next_cursor": {
+                    "type": "string"
+                },
+                "page_size": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer",
+                    "x-nullable": true
+                },
                 "users": {
                     "type": "array",
                     "items": {
@@ -2067,10 +2766,25 @@
                 "level": {
                     "type": "string"
                 },
+                "tag_grants": {
+                    "description": "TagGrants are atomically added as individual membership-tag pairs. Existing\ngrants are preserved; use the pair DELETE endpoint to revoke one.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "user_id": {
                     "type": "string"
                 },
                 "valid_until": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.BanUserRequest": {
+            "type": "object",
+            "properties": {
+                "reason": {
                     "type": "string"
                 }
             }
@@ -2155,6 +2869,28 @@
                 }
             }
         },
+        "httptransport.EffectiveRoleAccessResponse": {
+            "type": "object",
+            "properties": {
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httptransport.EffectiveRoleAccessRow"
+                    }
+                }
+            }
+        },
+        "httptransport.EffectiveRoleAccessRow": {
+            "type": "object",
+            "properties": {
+                "can_manage": {
+                    "type": "boolean"
+                },
+                "role_id": {
+                    "type": "string"
+                }
+            }
+        },
         "httptransport.ErrEnvelope": {
             "type": "object",
             "properties": {
@@ -2167,6 +2903,14 @@
             "type": "object",
             "properties": {
                 "has_role": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "httptransport.HasRoleWithTagResponse": {
+            "type": "object",
+            "properties": {
+                "has_role_with_tag": {
                     "type": "boolean"
                 }
             }
@@ -2327,13 +3071,15 @@
             "type": "object",
             "properties": {
                 "device_id": {
+                    "description": "DeviceID optionally binds the rotated session to a stable client device.",
                     "type": "string"
                 },
                 "device_label": {
+                    "description": "DeviceLabel optionally records a human-readable client label.",
                     "type": "string"
                 },
                 "refresh_token": {
-                    "description": "RefreshToken lets a multi-account client refresh a specific account without\nthe cookie (non-ambient, so no CSRF header is required for this path).",
+                    "description": "RefreshToken lets a multi-account client refresh a specific account without\na request cookie (non-ambient body-token mode, so no CSRF header is required). When\nomitted, the refresh cookie and matching X-CSRF-Token are both required.",
                     "type": "string"
                 }
             }
@@ -2380,6 +3126,17 @@
                 }
             }
         },
+        "httptransport.RenameRoleTagRequest": {
+            "type": "object",
+            "properties": {
+                "new_tag": {
+                    "type": "string"
+                },
+                "old_tag": {
+                    "type": "string"
+                }
+            }
+        },
         "httptransport.RoleDTO": {
             "type": "object",
             "properties": {
@@ -2400,18 +3157,33 @@
                     "items": {
                         "type": "string"
                     }
+                },
+                "Tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
         "httptransport.RoleMemberRow": {
             "type": "object",
             "properties": {
-                "email": {},
+                "email": {
+                    "type": "string",
+                    "x-nullable": true
+                },
                 "level": {
                     "type": "string"
                 },
                 "login": {
                     "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "user_id": {
                     "type": "string"
@@ -2483,14 +3255,32 @@
                 }
             }
         },
+        "httptransport.RoleTagPairRequest": {
+            "type": "object",
+            "properties": {
+                "tag": {
+                    "type": "string"
+                }
+            }
+        },
         "httptransport.RolesListResponse": {
             "type": "object",
             "properties": {
+                "next_cursor": {
+                    "type": "string"
+                },
+                "page_size": {
+                    "type": "integer"
+                },
                 "roles": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/httptransport.RoleDTO"
                     }
+                },
+                "total": {
+                    "type": "integer",
+                    "x-nullable": true
                 }
             }
         },
@@ -2619,6 +3409,31 @@
             "type": "object",
             "properties": {
                 "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.TokenHasRoleRequest": {
+            "type": "object",
+            "properties": {
+                "role_name": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.TokenHasRoleWithTagRequest": {
+            "type": "object",
+            "properties": {
+                "role_name": {
+                    "type": "string"
+                },
+                "tag": {
+                    "type": "string"
+                },
+                "token": {
                     "type": "string"
                 }
             }

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type RoleRequest struct {
@@ -48,24 +49,42 @@ func (s *Store) ListPendingRoleRequests(ctx context.Context, roleID uuid.UUID) (
 }
 
 func (s *Store) DecideRoleRequest(ctx context.Context, id uuid.UUID, approved bool, decidedBy uuid.UUID) error {
+	return s.DecideRoleRequestWithMembership(ctx, id, approved, decidedBy, time.Now())
+}
+
+// DecideRoleRequestWithMembership changes the request state and, when
+// approved, grants membership in the same transaction. Locking the request
+// prevents double decisions and eliminates an "approved but not a member" state.
+func (s *Store) DecideRoleRequestWithMembership(ctx context.Context, id uuid.UUID, approved bool, decidedBy uuid.UUID, at time.Time) error {
 	st := "rejected"
 	if approved {
 		st = "approved"
 	}
-	res := s.db.WithContext(ctx).Model(&roleRequestModel{}).
-		Where("id = ? AND status = ?", id, "pending").
-		Updates(map[string]any{
-			"status":     st,
-			"decided_by": decidedBy,
-			"decided_at": time.Now(),
-		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return errors.New("request not pending")
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var request roleRequestModel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&request).Error; err != nil {
+			return err
+		}
+		if request.Status != string(domain.RoleRequestPending) {
+			return errors.New("request not pending")
+		}
+		if approved {
+			grantor := decidedBy
+			if err := assignUserRoleTx(tx, request.TargetUserID, request.RoleID, domain.RoleMember, &grantor, at, nil, nil); err != nil {
+				return err
+			}
+		}
+		res := tx.Model(&roleRequestModel{}).
+			Where("id = ? AND status = ?", id, string(domain.RoleRequestPending)).
+			Updates(map[string]any{"status": st, "decided_by": decidedBy, "decided_at": at})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return errors.New("request not pending")
+		}
+		return nil
+	})
 }
 
 func (s *Store) GetRoleRequest(ctx context.Context, id uuid.UUID) (*RoleRequest, error) {

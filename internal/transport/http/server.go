@@ -54,6 +54,8 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 		r.Post("/auth/register", s.handleRegister)
 		r.Post("/auth/login", s.handleLogin)
 		r.Post("/auth/service-token", s.handleServiceToken)
+		r.Post("/auth/has-role", s.handleTokenCheckRole)
+		r.Post("/auth/has-role-with-tag", s.handleTokenCheckRoleWithTag)
 		r.Get("/auth/token/info", s.handleTokenValidate)
 		r.Get("/auth/token/verify-access", s.handleVerifyAccessTokenOnly)
 		r.Post("/auth/login/verify-otp", s.handleLoginVerify)
@@ -69,6 +71,8 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 			r.Use(s.requireAccessJWT)
 			r.Get("/me", s.handleMe)
 			r.Get("/me/has-role", s.handleCheckRole)
+			r.Get("/me/has-role-with-tag", s.handleCheckRoleWithTag)
+			r.Get("/me/role-access", s.handleRoleAccess)
 			r.Post("/auth/password/2fa", s.handleChangePassword2FAStart)
 			r.Post("/auth/password", s.handleChangePassword)
 			r.Post("/auth/step-up-2fa/start", s.handleStepUp2FAStart)
@@ -82,6 +86,8 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 			r.With(s.csrf).Post("/admin/registration-invites", s.handleCreateRegistrationInvite)
 			r.With(s.csrf).Post("/admin/signing-keys/rotate", s.handleRotateSigningKey)
 			r.Get("/admin/users", s.handleListUsers)
+			r.With(s.csrf).Post("/admin/users/{userID}/ban", s.handleBanUser)
+			r.With(s.csrf).Delete("/admin/users/{userID}/ban", s.handleUnbanUser)
 
 			r.Get("/roles", s.handleListRoles)
 			r.Post("/roles", s.handleCreateRole)
@@ -90,9 +96,15 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 			r.Patch("/roles/{roleID}/parent", s.handleSetRoleParent)
 			r.Post("/roles/{roleID}/mounts", s.handleMountRole)
 			r.Delete("/roles/{roleID}/mounts/{parentID}", s.handleUnmountRole)
+			r.Get("/roles/{roleID}/subgroups", s.handleListSubgroups)
+			r.With(s.csrf).Post("/roles/{roleID}/tags", s.handleAddRoleTag)
+			r.With(s.csrf).Delete("/roles/{roleID}/tags", s.handleDeleteRoleTag)
+			r.With(s.csrf).Patch("/roles/{roleID}/tags", s.handleRenameRoleTag)
 			r.Get("/users/{userID}/roles", s.handleUserRoles)
 			r.Get("/roles/{roleID}/members", s.handleListRoleMembers)
 			r.Post("/roles/{roleID}/members", s.handleAssignRole)
+			r.With(s.csrf).Post("/roles/{roleID}/members/{userID}/tags", s.handleAddUserRoleTag)
+			r.With(s.csrf).Delete("/roles/{roleID}/members/{userID}/tags", s.handleDeleteUserRoleTag)
 			r.Delete("/roles/{roleID}/members/{userID}", s.handleRemoveRole)
 			r.Post("/roles/{roleID}/requests", s.handleRoleRequest)
 			r.Get("/roles/{roleID}/requests", s.handleListRoleRequests)
@@ -170,6 +182,11 @@ func (s *Server) requireAccessJWT(next http.Handler) http.Handler {
 		uid, err := uuid.Parse(claims.Subject)
 		if err != nil {
 			s.writeErr(w, http.StatusUnauthorized, "invalid subject")
+			return
+		}
+		banned, err := s.auth.IsBanned(r.Context(), uid)
+		if err != nil || banned {
+			s.writeErr(w, http.StatusUnauthorized, "account banned")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithUserID(r.Context(), uid)))

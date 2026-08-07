@@ -15,6 +15,7 @@ type Repository interface {
 	Ping(ctx context.Context) error
 
 	CreateHumanUser(ctx context.Context, login, email, passwordHash string) (uuid.UUID, error)
+	RegisterHumanWithInvite(ctx context.Context, tokenHash []byte, login, email, passwordHash string, historyCipher, historyNonce []byte, historyKeep int) (uuid.UUID, bool, error)
 	CreateServiceUser(ctx context.Context, login, secretHash string) (uuid.UUID, error)
 	GetUserByLogin(ctx context.Context, login string) (*domain.User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
@@ -24,6 +25,8 @@ type Repository interface {
 	InsertPasswordHistory(ctx context.Context, userID uuid.UUID, hash string, ciphertext, nonce []byte) error
 	TrimPasswordHistory(ctx context.Context, userID uuid.UUID, keep int) error
 	ListUsers(ctx context.Context, limit int) ([]domain.User, error)
+	SearchUsers(ctx context.Context, query string, after *PageCursor, limit int, countTotal bool) ([]domain.User, *PageCursor, *int64, error)
+	SetUserBan(ctx context.Context, userID uuid.UUID, bannedBy *uuid.UUID, reason string) error
 	CountHumanUsers(ctx context.Context) (int64, error)
 	SetSuperuser(ctx context.Context, userID uuid.UUID, v bool) error
 
@@ -40,9 +43,15 @@ type Repository interface {
 	FindRefreshByTokenHash(ctx context.Context, tokenHash []byte) (*RefreshRow, error)
 
 	CreateRole(ctx context.Context, name, description string, parentID *uuid.UUID) (uuid.UUID, error)
+	CreateRoleWithParents(ctx context.Context, name, description string, parentIDs []uuid.UUID) (uuid.UUID, error)
 	GetRoleByName(ctx context.Context, name string) (*domain.Role, error)
 	GetRoleByID(ctx context.Context, id uuid.UUID) (*domain.Role, error)
 	ListRoles(ctx context.Context) ([]domain.Role, error)
+	SearchRoles(ctx context.Context, query string, after *PageCursor, limit int, countTotal bool) ([]domain.Role, *PageCursor, *int64, error)
+	ListSubroles(ctx context.Context, roleID uuid.UUID, recursive bool) ([]domain.Role, error)
+	AddRoleTag(ctx context.Context, roleID uuid.UUID, tag string) error
+	DeleteRoleTag(ctx context.Context, roleID uuid.UUID, tag string) error
+	RenameRoleTag(ctx context.Context, roleID uuid.UUID, oldTag, newTag string) error
 	UpdateRoleDescription(ctx context.Context, id uuid.UUID, description string) error
 	DeleteRole(ctx context.Context, roleID uuid.UUID) error
 	SetRoleParent(ctx context.Context, roleID uuid.UUID, parentID *uuid.UUID) error
@@ -51,10 +60,17 @@ type Repository interface {
 	RoleAncestors(ctx context.Context, roleID uuid.UUID) ([]uuid.UUID, error)
 	RoleHasAncestor(ctx context.Context, roleID, candidate uuid.UUID) (bool, error)
 	AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, level domain.RoleLevel, grantedBy *uuid.UUID, validFrom time.Time, validUntil *time.Time) error
+	AssignUserRoleWithTagGrants(ctx context.Context, userID, roleID uuid.UUID, level domain.RoleLevel, grantedBy *uuid.UUID, validFrom time.Time, validUntil *time.Time, tags []string) error
+	AddUserRoleTag(ctx context.Context, userID, roleID uuid.UUID, tag string) error
+	DeleteUserRoleTag(ctx context.Context, userID, roleID uuid.UUID, tag string) error
 	RemoveUserRole(ctx context.Context, userID, roleID uuid.UUID) error
 	ListUserRoles(ctx context.Context, userID uuid.UUID, at time.Time) ([]domain.UserRole, error)
 	ListRoleMembers(ctx context.Context, roleID uuid.UUID, at time.Time) ([]RoleMember, error)
 	GetUserRoleLevel(ctx context.Context, userID, roleID uuid.UUID, at time.Time) (domain.RoleLevel, bool, error)
+	UserHasEffectiveRole(ctx context.Context, userID, roleID uuid.UUID, at time.Time) (bool, error)
+	UserIsEffectiveRoleAdmin(ctx context.Context, userID, roleID uuid.UUID, at time.Time) (bool, error)
+	UserHasEffectiveRoleTag(ctx context.Context, userID, roleID uuid.UUID, tag string, at time.Time) (bool, error)
+	ListEffectiveRoleAccess(ctx context.Context, userID uuid.UUID, at time.Time) ([]EffectiveRoleAccess, error)
 	UserHasRoleName(ctx context.Context, userID uuid.UUID, roleName string, at time.Time) (bool, error)
 
 	GetSigningKeyMaterial(ctx context.Context, kid string) (*SigningKeyMaterial, error)
@@ -66,6 +82,9 @@ type Repository interface {
 	CreateEmailOTP(ctx context.Context, userID uuid.UUID, purpose domain.OTPPurpose, codeHash []byte, expiresAt time.Time, correlation *string) (uuid.UUID, error)
 	GetLatestOTP(ctx context.Context, userID uuid.UUID, purpose domain.OTPPurpose) (*OTPRow, error)
 	GetOTPByCorrelation(ctx context.Context, correlation string) (*OTPRow, error)
+	GetMostRecentOTP(ctx context.Context, userID uuid.UUID, purpose domain.OTPPurpose) (*OTPRow, error)
+	IssuePasswordResetOTP(ctx context.Context, userID uuid.UUID, codeHash []byte, now, expiresAt time.Time, minInterval time.Duration) (uuid.UUID, bool, error)
+	CompletePasswordResetOTP(ctx context.Context, userID uuid.UUID, candidateHash []byte, now time.Time, maxAttempts, historyLimit int, prepare PasswordResetPreparer) (bool, error)
 	ConsumeOTP(ctx context.Context, id uuid.UUID) error
 	IncrementOTPAttempt(ctx context.Context, id uuid.UUID) error
 
@@ -82,6 +101,7 @@ type Repository interface {
 	CreateRoleRequest(ctx context.Context, requesterID, targetUserID, roleID uuid.UUID) (uuid.UUID, error)
 	ListPendingRoleRequests(ctx context.Context, roleID uuid.UUID) ([]RoleRequest, error)
 	DecideRoleRequest(ctx context.Context, id uuid.UUID, approved bool, decidedBy uuid.UUID) error
+	DecideRoleRequestWithMembership(ctx context.Context, id uuid.UUID, approved bool, decidedBy uuid.UUID, at time.Time) error
 	GetRoleRequest(ctx context.Context, id uuid.UUID) (*RoleRequest, error)
 
 	InsertRegistrationInvite(ctx context.Context, tokenHash []byte, email *string, superuser bool, expiresAt time.Time, createdBy uuid.UUID) (uuid.UUID, error)
@@ -92,4 +112,20 @@ type Repository interface {
 	ConsumeMagicLink(ctx context.Context, tokenHash []byte) (uuid.UUID, error)
 }
 
+// PasswordResetMutation is prepared by the service without repository calls,
+// then applied atomically with OTP consumption and password-history trimming.
+type PasswordResetMutation struct {
+	PasswordHash string
+	Ciphertext   []byte
+	Nonce        []byte
+}
+
+type PasswordResetPreparer func(history []PasswordHistoryEntry) (PasswordResetMutation, error)
+
 var _ Repository = (*Store)(nil)
+
+// PageCursor is the last composite sort key returned by a keyset-paginated query.
+type PageCursor struct {
+	Sort string
+	ID   uuid.UUID
+}

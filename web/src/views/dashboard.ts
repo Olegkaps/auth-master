@@ -4,9 +4,12 @@ import { navigate } from '../router'
 import { badge, button, card, h, table } from '../ui'
 
 export async function dashboardView(): Promise<HTMLElement> {
-  const roles = await api.listRoles()
   const su = isSuperuser()
-  const users = su ? await api.listUsers(500).catch(() => []) : []
+  const [roles, rolePage, userPage] = await Promise.all([
+    api.listRoles(),
+    api.searchRoles('', '', 1),
+    su ? api.searchUsers('', '', 1).catch(() => null) : Promise.resolve(null),
+  ])
   const roleName = (id: string): string => roles.find((r) => r.id === id)?.name ?? id.slice(0, 8)
 
   const u = session.user!
@@ -30,9 +33,9 @@ export async function dashboardView(): Promise<HTMLElement> {
   const stats = h(
     'div',
     { class: 'stat-grid' },
-    stat('Roles in system', roles.length, '/roles'),
+    stat('Roles in system', rolePage.total ?? roles.length, '/roles'),
     stat('Your memberships', store.myRoles.length, '/roles'),
-    su ? stat('Users', users.length, '/admin/users') : stat('Active sessions', '→', '/sessions'),
+    su ? stat('Users', userPage?.total ?? 0, '/admin/users') : stat('Active sessions', '→', '/sessions'),
   )
 
   const myRoles = card(
@@ -40,7 +43,12 @@ export async function dashboardView(): Promise<HTMLElement> {
     store.myRoles.length
       ? table(
           ['Role', 'Level'],
-          store.myRoles.map((r) => [roleName(r.roleId), r.level === 'role_admin' ? badge('role admin', 'blue') : badge('member', 'gray')]),
+          store.myRoles.map((r) => [
+            roleName(r.roleId),
+            r.level === 'role_admin'
+              ? badge('role admin', 'blue')
+              : badge(r.level === 'direct_member' ? 'direct member' : 'member', 'gray'),
+          ]),
         )
       : h('div', { class: 'empty' }, 'You have no roles yet. Browse roles and request membership.'),
   )

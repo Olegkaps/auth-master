@@ -17,6 +17,9 @@ type userModel struct {
 	Superuser         bool `gorm:"not null;default:false"`
 	PasswordChangedAt *time.Time
 	LockedUntil       *time.Time
+	BannedAt          *time.Time
+	BannedBy          *uuid.UUID `gorm:"type:uuid"`
+	BanReason         string     `gorm:"not null;default:''"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -47,6 +50,13 @@ type roleMountModel struct {
 	CreatedAt    time.Time
 }
 
+type roleTagModel struct {
+	RoleID uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Tag    string    `gorm:"primaryKey;size:64"`
+}
+
+func (roleTagModel) TableName() string { return "role_tags" }
+
 func (roleMountModel) TableName() string { return "role_mounts" }
 
 func (roleModel) TableName() string { return "roles" }
@@ -68,6 +78,13 @@ type userRoleModel struct {
 	GrantedBy  *uuid.UUID `gorm:"type:uuid"`
 	CreatedAt  time.Time
 }
+
+type userRoleTagModel struct {
+	UserRoleID uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Tag        string    `gorm:"primaryKey;size:64"`
+}
+
+func (userRoleTagModel) TableName() string { return "user_role_tags" }
 
 func (userRoleModel) TableName() string { return "user_roles" }
 

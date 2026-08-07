@@ -8,9 +8,30 @@ export const ADMIN = {
   email: process.env.E2E_ADMIN_EMAIL || 'admin@localhost',
 }
 
+async function mailFetch(path: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 3_000)
+  try {
+    return await fetch(`${MAILPIT}${path}`, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Delete all messages so the next OTP is unambiguous (tests run serially). */
 export async function clearMail(): Promise<void> {
-  await fetch(`${MAILPIT}/api/v1/messages`, { method: 'DELETE' })
+	let lastError: unknown
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			const response = await mailFetch('/api/v1/messages', { method: 'DELETE' })
+			if (response.ok) return
+			lastError = new Error(`Mailpit delete returned ${response.status}`)
+		} catch (error) {
+			lastError = error
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw lastError
 }
 
 interface MailMessage {
@@ -22,14 +43,14 @@ interface MailMessage {
 /** Poll Mailpit for the latest message to `email` and extract its 6-digit code. */
 export async function waitForOtp(email: string, subjectIncludes = 'code'): Promise<string> {
   for (let i = 0; i < 40; i++) {
-    const res = await fetch(`${MAILPIT}/api/v1/messages?limit=30`)
+    const res = await mailFetch('/api/v1/messages?limit=30')
     if (res.ok) {
       const { messages } = (await res.json()) as { messages: MailMessage[] }
       const hit = messages.find(
         (m) => m.To.some((t) => t.Address.toLowerCase() === email.toLowerCase()) && m.Subject.toLowerCase().includes(subjectIncludes.toLowerCase()),
       )
       if (hit) {
-        const full = await (await fetch(`${MAILPIT}/api/v1/message/${hit.ID}`)).json()
+        const full = await (await mailFetch(`/api/v1/message/${hit.ID}`)).json()
         const match = /(\d{6})/.exec(full.Text || '')
         if (match) return match[1]
       }
@@ -42,12 +63,12 @@ export async function waitForOtp(email: string, subjectIncludes = 'code'): Promi
 /** Poll Mailpit for the newest magic-login link to `email` and return its token. */
 export async function waitForMagicToken(email: string): Promise<string> {
   for (let i = 0; i < 40; i++) {
-    const res = await fetch(`${MAILPIT}/api/v1/messages?limit=30`)
+    const res = await mailFetch('/api/v1/messages?limit=30')
     if (res.ok) {
       const { messages } = (await res.json()) as { messages: MailMessage[] }
       const hit = messages.find((m) => m.To.some((t) => t.Address.toLowerCase() === email.toLowerCase()) && m.Subject.toLowerCase().includes('link'))
       if (hit) {
-        const full = await (await fetch(`${MAILPIT}/api/v1/message/${hit.ID}`)).json()
+        const full = await (await mailFetch(`/api/v1/message/${hit.ID}`)).json()
         const match = /token=([A-Za-z0-9]+)/.exec(full.Text || '')
         if (match) return match[1]
       }
@@ -89,8 +110,11 @@ export function uniqueSuffix(): string {
 export async function inviteAndRegister(adminPage: Page, browser: Browser, login: string, email: string, pass: string): Promise<void> {
   await nav(adminPage, '/admin/invites')
   await adminPage.getByTestId('invite-email').fill(email)
+	const created = adminPage.waitForResponse((response) => response.url().includes('/v1/admin/registration-invites') && response.request().method() === 'POST')
   await adminPage.getByTestId('invite-generate').click()
-  const token = await adminPage.getByTestId('invite-token-field').inputValue()
+	const response = await created
+	expect(response.status()).toBe(201)
+	const token = ((await response.json()) as { token: string }).token
   const ctx = await browser.newContext()
   const p = await ctx.newPage()
   await p.goto(`/#/register?token=${encodeURIComponent(token)}`)

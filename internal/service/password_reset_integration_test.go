@@ -29,13 +29,33 @@ func TestIntegration_PasswordResetWithOTP(t *testing.T) {
 	// Inject a known OTP for the reset purpose, as the tests do for login.
 	code := "135790"
 	chash := hashOTP(a.otpPepper, code)
-	_, err = repo.CreateEmailOTP(ctx, uid, domain.OTPPasswordChange, chash, time.Now().Add(time.Minute), nil)
+	_, issued, err := repo.IssuePasswordResetOTP(ctx, uid, chash, time.Now(), time.Now().Add(time.Minute), 0)
 	require.NoError(t, err)
+	require.True(t, issued)
 
-	// Wrong code is rejected.
-	require.ErrorIs(t, a.ResetPasswordWithOTP(ctx, "resetme", "000000", "New-Pass-5678!"), ErrOTPInvalid)
+	// A wrong code is rejected and counted without evaluating password policy.
+	require.ErrorIs(t, a.ResetPasswordWithOTP(ctx, "resetme", "000000", "weak"), ErrOTPInvalid)
+	otp, err := repo.GetMostRecentOTP(ctx, uid, domain.OTPPasswordReset)
+	require.NoError(t, err)
+	require.Equal(t, 1, otp.AttemptCount)
+	require.Nil(t, otp.ConsumedAt)
 
-	// Correct code sets the new password.
+	// Policy failures roll the completion transaction back, so the same correct
+	// code remains usable for a fixed password without another email round trip.
+	require.ErrorIs(t, a.ResetPasswordWithOTP(ctx, "resetme", code, "weak"), ErrPasswordPolicy)
+	require.ErrorIs(t, a.ResetPasswordWithOTP(ctx, "resetme", code, "Old-Pass-1234!"), ErrPasswordPolicy)
+	otp, err = repo.GetMostRecentOTP(ctx, uid, domain.OTPPasswordReset)
+	require.NoError(t, err)
+	require.Nil(t, otp.ConsumedAt)
+	originalKey := a.cfg.PasswordHistoryEncryptionKey
+	a.cfg.PasswordHistoryEncryptionKey = "invalid-key"
+	require.Error(t, a.ResetPasswordWithOTP(ctx, "resetme", code, "New-Pass-5678!"))
+	a.cfg.PasswordHistoryEncryptionKey = originalKey
+	otp, err = repo.GetMostRecentOTP(ctx, uid, domain.OTPPasswordReset)
+	require.NoError(t, err)
+	require.Nil(t, otp.ConsumedAt, "crypto preparation errors must leave the correct OTP reusable")
+
+	// Correct code plus valid mutation commits password, history, and consumption.
 	require.NoError(t, a.ResetPasswordWithOTP(ctx, "resetme", code, "New-Pass-5678!"))
 
 	// Old password no longer works; new one does (and requires OTP as usual).

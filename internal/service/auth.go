@@ -60,20 +60,22 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	if err != nil {
 		return uuid.Nil, err
 	}
-	id, err := a.repo.CreateHumanUser(ctx, login, email, hash)
+	historyKey, err := crypto.DecodeKey32(a.cfg.PasswordHistoryEncryptionKey)
 	if err != nil {
 		return uuid.Nil, err
 	}
-	if err := a.appendPasswordHistory(ctx, id, password, hash); err != nil {
-		return id, err
+	nonce, cipher, err := crypto.EncryptAESGCM(historyKey, []byte(password), nil)
+	if err != nil {
+		return uuid.Nil, err
 	}
-	if inv.Superuser {
-		if err := a.repo.SetSuperuser(ctx, id, true); err != nil {
-			return id, err
-		}
+	id, registered, err := a.repo.RegisterHumanWithInvite(
+		ctx, hashRefreshToken(inviteToken), login, email, hash, cipher, nonce, a.cfg.PasswordHistoryN,
+	)
+	if err != nil {
+		return uuid.Nil, err
 	}
-	if err := a.repo.MarkRegistrationInviteUsed(ctx, inv.ID); err != nil {
-		return id, err
+	if !registered {
+		return uuid.Nil, ErrInvalidInvite
 	}
 	return id, nil
 }
@@ -95,6 +97,9 @@ func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net
 	if u == nil || u.Kind != domain.UserHuman {
 		a.recordFailedLogin(ctx, login, ip)
 		return nil, ErrInvalidCredentials
+	}
+	if u.BannedAt != nil {
+		return nil, ErrBanned
 	}
 	if u.LockedUntil != nil && time.Now().Before(*u.LockedUntil) {
 		return nil, ErrLocked
@@ -192,10 +197,16 @@ func (a *Auth) LoginVerifyOTP(ctx context.Context, challenge, code, deviceID, de
 	if err != nil || u == nil {
 		return nil, nil, ErrOTPInvalid
 	}
+	if u.BannedAt != nil {
+		return nil, nil, ErrBanned
+	}
 	return a.issueTokenPair(ctx, u, deviceID, deviceLabel)
 }
 
 func (a *Auth) issueTokenPair(ctx context.Context, u *domain.User, deviceID, deviceLabel string) (*TokenPair, *domain.User, error) {
+	if u.BannedAt != nil {
+		return nil, nil, ErrBanned
+	}
 	if err := a.ensureSigningBootstrap(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -251,6 +262,9 @@ func (a *Auth) Refresh(ctx context.Context, refreshToken, deviceID, deviceLabel 
 	if err != nil || u == nil {
 		return nil, ErrInvalidCredentials
 	}
+	if u.BannedAt != nil {
+		return nil, ErrBanned
+	}
 	if err := a.ensureSigningBootstrap(ctx); err != nil {
 		return nil, err
 	}
@@ -303,6 +317,9 @@ func (a *Auth) VerifyAccessToken(ctx context.Context, token string, wantTyp stri
 	if v.Typ != wantTyp {
 		return nil, ErrWrongTokenType
 	}
+	if err := a.rejectBannedTokenSubject(ctx, v.Subject); err != nil {
+		return nil, err
+	}
 	return v, nil
 }
 
@@ -330,7 +347,22 @@ func (a *Auth) VerifyAccessOrServiceToken(ctx context.Context, token string) (*j
 	if v.Typ != jwtutil.TypeAccess && v.Typ != jwtutil.TypeService {
 		return nil, ErrWrongTokenType
 	}
+	if err := a.rejectBannedTokenSubject(ctx, v.Subject); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+func (a *Auth) rejectBannedTokenSubject(ctx context.Context, subject string) error {
+	userID, err := uuid.Parse(subject)
+	if err != nil {
+		return ErrInvalidCredentials
+	}
+	u, err := a.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	return requireActiveUser(u)
 }
 
 // StartPasswordChange2FA emails a one-time code that must be supplied to
@@ -409,10 +441,20 @@ func (a *Auth) StartPasswordReset(ctx context.Context, login string) error {
 	}
 	chash := hashOTP(a.otpPepper, code)
 	exp := time.Now().Add(a.cfg.OTPCodeTTL)
-	if _, err := a.repo.CreateEmailOTP(ctx, u.ID, domain.OTPPasswordChange, chash, exp, nil); err != nil {
+	otpID, issued, err := a.repo.IssuePasswordResetOTP(ctx, u.ID, chash, time.Now(), exp, a.cfg.OTPResetMinInterval)
+	if err != nil {
 		return err
 	}
-	return a.mail.Send([]string{*u.Email}, "Reset your password", fmt.Sprintf("Code: %s", code))
+	if !issued {
+		// Preserve the endpoint's enumeration-resistant success response.
+		return nil
+	}
+	if err := a.mail.Send([]string{*u.Email}, "Reset your password", fmt.Sprintf("Code: %s", code)); err != nil {
+		// Do not leave an undelivered credential active.
+		_ = a.repo.ConsumeOTP(ctx, otpID)
+		return err
+	}
+	return nil
 }
 
 // ResetPasswordWithOTP verifies the emailed OTP and sets a new password without
@@ -423,28 +465,17 @@ func (a *Auth) ResetPasswordWithOTP(ctx context.Context, login, code, newPasswor
 	if err != nil || u == nil || u.Kind != domain.UserHuman {
 		return ErrOTPInvalid // do not leak whether the login exists
 	}
-	row, err := a.repo.GetLatestOTP(ctx, u.ID, domain.OTPPasswordChange)
-	if err != nil || row == nil || time.Now().After(row.ExpiresAt) {
-		return ErrOTPInvalid
+	maxAttempts := a.cfg.OTPMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 5
 	}
-	if !otpCodesEqual(a.otpPepper, code, row.CodeHash) {
-		_ = a.repo.IncrementOTPAttempt(ctx, row.ID)
-		return ErrOTPInvalid
-	}
-	if err := a.validateNewPassword(ctx, u.ID, newPassword); err != nil {
-		return err
-	}
-	nhash, err := crypto.HashPassword(newPassword)
-	if err != nil {
-		return err
-	}
-	if err := a.repo.ConsumeOTP(ctx, row.ID); err != nil {
-		return ErrOTPInvalid
-	}
-	if err := a.repo.UpdatePassword(ctx, u.ID, nhash); err != nil {
-		return err
-	}
-	if err := a.appendPasswordHistory(ctx, u.ID, newPassword, nhash); err != nil {
+	completed, err := a.repo.CompletePasswordResetOTP(
+		ctx, u.ID, hashOTP(a.otpPepper, code), time.Now(), maxAttempts, a.cfg.PasswordHistoryN,
+		func(history []repository.PasswordHistoryEntry) (repository.PasswordResetMutation, error) {
+			return preparePasswordResetMutation(newPassword, history, a.cfg.PasswordHistoryEncryptionKey)
+		},
+	)
+	if err := passwordResetCompletionError(completed, err); err != nil {
 		return err
 	}
 	if u.Email != nil {
@@ -458,6 +489,9 @@ func (a *Auth) IssueServiceToken(ctx context.Context, login, secret string) (str
 	u, err := a.repo.GetUserByLogin(ctx, login)
 	if err != nil || u == nil || u.Kind != domain.UserService || u.ServiceSecretHash == nil {
 		return "", time.Time{}, ErrInvalidCredentials
+	}
+	if u.BannedAt != nil {
+		return "", time.Time{}, ErrBanned
 	}
 	ok, err := crypto.VerifySecret(secret, *u.ServiceSecretHash)
 	if err != nil || !ok {

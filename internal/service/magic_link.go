@@ -19,7 +19,7 @@ import (
 func (a *Auth) StartMagicLink(ctx context.Context, login string) error {
 	login = normalizeLogin(login)
 	u, err := a.repo.GetUserByLogin(ctx, login)
-	if err != nil || u == nil || u.Email == nil || u.Kind != domain.UserHuman {
+	if err != nil || u == nil || u.Email == nil || u.Kind != domain.UserHuman || u.BannedAt != nil {
 		return nil
 	}
 	raw, err := crypto.RandomBytes(32)
@@ -55,6 +55,9 @@ func (a *Auth) CompleteMagicLink(ctx context.Context, token, deviceID, deviceLab
 	u, err := a.repo.GetUserByID(ctx, userID)
 	if err != nil || u == nil {
 		return nil, nil, ErrOTPInvalid
+	}
+	if err := requireActiveUser(u); err != nil {
+		return nil, nil, err
 	}
 	return a.issueTokenPair(ctx, u, deviceID, deviceLabel)
 }

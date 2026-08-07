@@ -101,10 +101,13 @@ type LogoutRequest struct {
 
 // RefreshRequestBody is the optional JSON body for POST /auth/refresh.
 type RefreshRequestBody struct {
-	DeviceID    string `json:"device_id"`
-	DeviceLabel string `json:"device_label"`
+	// DeviceID optionally binds the rotated session to a stable client device.
+	DeviceID string `json:"device_id,omitempty"`
+	// DeviceLabel optionally records a human-readable client label.
+	DeviceLabel string `json:"device_label,omitempty"`
 	// RefreshToken lets a multi-account client refresh a specific account without
-	// the cookie (non-ambient, so no CSRF header is required for this path).
+	// a request cookie (non-ambient body-token mode, so no CSRF header is required). When
+	// omitted, the refresh cookie and matching X-CSRF-Token are both required.
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
@@ -140,6 +143,15 @@ type MeResponse struct {
 	Email     any    `json:"email"`
 	Kind      string `json:"kind"`
 	Superuser bool   `json:"superuser"`
+}
+
+type EffectiveRoleAccessRow struct {
+	RoleID    string `json:"role_id"`
+	CanManage bool   `json:"can_manage"`
+}
+
+type EffectiveRoleAccessResponse struct {
+	Roles []EffectiveRoleAccessRow `json:"roles"`
 }
 
 // StatusResponse is a simple {status} acknowledgement.
@@ -203,12 +215,16 @@ type RoleDTO struct {
 	Name        string   `json:"Name"`
 	Description string   `json:"Description"`
 	ParentIDs   []string `json:"ParentIDs"`
+	Tags        []string `json:"Tags"`
 	CreatedAt   string   `json:"CreatedAt"`
 }
 
 // RolesListResponse is GET /roles.
 type RolesListResponse struct {
-	Roles []RoleDTO `json:"roles"`
+	Roles      []RoleDTO `json:"roles"`
+	PageSize   int       `json:"page_size"`
+	Total      *int64    `json:"total" extensions:"x-nullable"`
+	NextCursor string    `json:"next_cursor"`
 }
 
 // CreateRoleRequestBody is POST /roles.
@@ -241,10 +257,11 @@ type MountRoleRequest struct {
 
 // RoleMemberRow is one member in RoleMembersResponse.
 type RoleMemberRow struct {
-	UserID string `json:"user_id"`
-	Login  string `json:"login"`
-	Email  any    `json:"email"`
-	Level  string `json:"level"`
+	UserID string   `json:"user_id"`
+	Login  string   `json:"login"`
+	Email  *string  `json:"email" extensions:"x-nullable"`
+	Level  string   `json:"level"`
+	Tags   []string `json:"tags"`
 }
 
 // RoleMembersResponse is GET /roles/{roleID}/members.
@@ -273,6 +290,9 @@ type AssignRoleRequestBody struct {
 	UserID     string  `json:"user_id"`
 	Level      string  `json:"level"`
 	ValidUntil *string `json:"valid_until,omitempty"`
+	// TagGrants are atomically added as individual membership-tag pairs. Existing
+	// grants are preserved; use the pair DELETE endpoint to revoke one.
+	TagGrants []string `json:"tag_grants,omitempty"`
 }
 
 // RoleRequestCreateBody is POST /roles/{roleID}/requests.
@@ -329,17 +349,47 @@ type StepUp2FAExpireRequestBody struct {
 
 // AdminUserRow is one user in GET /admin/users.
 type AdminUserRow struct {
-	ID        string `json:"id"`
-	Login     string `json:"login"`
-	Email     string `json:"email"`
-	Kind      string `json:"kind"`
-	Superuser bool   `json:"superuser"`
-	CreatedAt string `json:"created_at"`
+	ID        string  `json:"id"`
+	Login     string  `json:"login"`
+	Email     *string `json:"email" extensions:"x-nullable"`
+	Kind      string  `json:"kind"`
+	Superuser bool    `json:"superuser"`
+	BannedAt  *string `json:"banned_at" extensions:"x-nullable"`
+	BanReason string  `json:"ban_reason"`
+	CreatedAt string  `json:"created_at"`
 }
 
 // AdminUsersResponse is GET /admin/users.
 type AdminUsersResponse struct {
-	Users []AdminUserRow `json:"users"`
+	Users      []AdminUserRow `json:"users"`
+	PageSize   int            `json:"page_size"`
+	Total      *int64         `json:"total" extensions:"x-nullable"`
+	NextCursor string         `json:"next_cursor"`
+}
+
+type HasRoleWithTagResponse struct {
+	HasRoleWithTag bool `json:"has_role_with_tag"`
+}
+type RoleTagPairRequest struct {
+	Tag string `json:"tag"`
+}
+type RenameRoleTagRequest struct {
+	OldTag string `json:"old_tag"`
+	NewTag string `json:"new_tag"`
+}
+type BanUserRequest struct {
+	Reason string `json:"reason"`
+}
+
+type TokenHasRoleRequest struct {
+	Token    string `json:"token"`
+	RoleName string `json:"role_name"`
+}
+
+type TokenHasRoleWithTagRequest struct {
+	Token    string `json:"token"`
+	RoleName string `json:"role_name"`
+	Tag      string `json:"tag"`
 }
 
 // HasRoleResponse is GET /me/has-role.

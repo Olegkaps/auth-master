@@ -6,15 +6,19 @@ import { api, session, setUser, type UserRole } from './api'
 
 export const store = {
   myRoles: [] as UserRole[],
+  roleAccess: new Map<string, { canManage: boolean }>(),
 }
 
 /** Load /me and the caller's role memberships. Call after sign-in and on boot. */
 export async function loadIdentity(): Promise<void> {
   const me = await api.me()
   try {
-    store.myRoles = await api.userRoles(me.id)
+    const [directRoles, access] = await Promise.all([api.userRoles(me.id), api.roleAccess()])
+    store.myRoles = directRoles
+    store.roleAccess = new Map(access.roles.map((role) => [role.role_id, { canManage: role.can_manage }]))
   } catch {
     store.myRoles = []
+    store.roleAccess = new Map()
   }
   setUser(me) // triggers session listeners so the shell repaints with admin nav
 }
@@ -24,11 +28,11 @@ export function isSuperuser(): boolean {
 }
 
 export function isRoleAdmin(roleId: string): boolean {
-  return store.myRoles.some((r) => r.roleId === roleId && r.level === 'role_admin')
+  return store.roleAccess.get(roleId)?.canManage === true
 }
 
 export function isMember(roleId: string): boolean {
-  return store.myRoles.some((r) => r.roleId === roleId)
+  return store.roleAccess.has(roleId)
 }
 
 /** Mirrors the backend CanAssignRole check for gating admin UI. */

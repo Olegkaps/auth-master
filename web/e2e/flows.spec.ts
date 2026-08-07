@@ -144,16 +144,42 @@ test('forgot-password reset flow works end to end', async ({ page, browser }) =>
   await up.getByTestId('reg-submit').click()
   await expect(up.getByTestId('login-input')).toBeVisible()
 
-  // Forgot-password: request a code, set a new password.
+  // Forgot-password: an OTP is capped, consumed after the cap, and a resend
+  // replaces it with a fresh credential before a password may be changed.
   await clearMail()
   await up.goto('/#/reset')
   await up.locator('.input').first().fill(login)
   await up.getByRole('button', { name: /email me a code/i }).click()
-  const code = await waitForOtp(email, 'reset')
+  const firstCode = await waitForOtp(email, 'reset')
   await up.getByRole('button', { name: /set new password/i }).waitFor()
-  const inputs = up.locator('.input')
-  await inputs.nth(0).fill(code) // reset code
-  await inputs.nth(1).fill(newPass) // new password
+  let inputs = up.locator('.input')
+  await inputs.nth(1).fill(newPass)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await inputs.nth(0).fill('000000')
+    const wrong = up.waitForResponse((response) => response.url().includes('/password/reset/complete'))
+    await up.getByRole('button', { name: /set new password/i }).click()
+    expect((await wrong).status()).toBe(401)
+  }
+  await inputs.nth(0).fill(firstCode)
+  const capped = up.waitForResponse((response) => response.url().includes('/password/reset/complete'))
+  await up.getByRole('button', { name: /set new password/i }).click()
+  expect((await capped).status()).toBe(401)
+
+  await up.getByRole('button', { name: /use a different login/i }).click()
+  await clearMail()
+  await up.getByRole('button', { name: /email me a code/i }).click()
+  const freshCode = await waitForOtp(email, 'reset')
+  inputs = up.locator('.input')
+  await inputs.nth(0).fill(freshCode)
+	await inputs.nth(1).fill('weak')
+	const policyFailure = up.waitForResponse((response) => response.url().includes('/password/reset/complete'))
+	await up.getByRole('button', { name: /set new password/i }).click()
+	expect((await policyFailure).status()).toBe(400)
+	await expect(up.getByRole('button', { name: /set new password/i })).toBeVisible()
+	// Policy failure rolls back the transaction; the exact same OTP can be
+	// retried with a valid password and is consumed only with that mutation.
+	await inputs.nth(0).fill(freshCode)
+  await inputs.nth(1).fill(newPass)
   await up.getByRole('button', { name: /set new password/i }).click()
   await expect(up.getByTestId('login-input')).toBeVisible()
 

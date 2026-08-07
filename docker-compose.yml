@@ -8,6 +8,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-auth}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       # Use container env (set from POSTGRES_*) so it stays correct if .env changes credentials.
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -29,10 +31,22 @@ services:
       # Inside the stack, DB and SMTP are sibling services (override host-oriented .env).
       DATABASE_URL: postgres://${POSTGRES_USER:-auth}:${POSTGRES_PASSWORD:-auth}@postgres:5432/${POSTGRES_DB:-auth}?sslmode=disable
       SMTP_HOST: mailpit
-    ports:
-      - "${HTTP_PORT:-8080}:8080"
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:8080}
+      REGISTRATION_INVITE_BASE_URL: ${REGISTRATION_INVITE_BASE_URL:-http://localhost:8080}
+    expose:
+      - "8080"
     depends_on:
       postgres:
         condition: service_healthy
       mailpit:
         condition: service_started
+
+  web:
+    build: ./web
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    depends_on:
+      - authd
+
+volumes:
+  postgres-data:

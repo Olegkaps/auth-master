@@ -154,6 +154,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.auth.LoginPassword(r.Context(), b.Login, b.Password, clientIP(r))
 	if err != nil {
+		if errors.Is(err, service.ErrBanned) {
+			s.writeErr(w, http.StatusForbidden, "account banned")
+			return
+		}
 		if errors.Is(err, service.ErrInvalidCredentials) {
 			s.writeErr(w, http.StatusUnauthorized, "invalid credentials")
 			return
@@ -206,6 +210,10 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	tokens, _, err := s.auth.LoginVerifyOTP(r.Context(), b.Challenge, b.Code, b.DeviceID, b.DeviceLabel)
 	if err != nil {
+		if errors.Is(err, service.ErrBanned) {
+			s.writeErr(w, http.StatusForbidden, "account banned")
+			return
+		}
 		if errors.Is(err, service.ErrOTPInvalid) {
 			s.writeErr(w, http.StatusUnauthorized, "invalid otp")
 			return
@@ -286,6 +294,10 @@ func (s *Server) handleMagicLinkVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	tokens, _, err := s.auth.CompleteMagicLink(r.Context(), b.Token, b.DeviceID, b.DeviceLabel)
 	if err != nil {
+		if errors.Is(err, service.ErrBanned) {
+			s.writeErr(w, http.StatusForbidden, "account banned")
+			return
+		}
 		if errors.Is(err, service.ErrOTPInvalid) {
 			s.writeErr(w, http.StatusUnauthorized, "invalid or expired link")
 			return
@@ -305,17 +317,18 @@ func (s *Server) handleMagicLinkVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleRefresh rotates the refresh token (requires refresh cookie + CSRF header).
+// handleRefresh rotates a body-supplied non-ambient refresh token, or falls
+// back to the ambient refresh cookie with double-submit CSRF validation.
 // @Summary Refresh access token
-// @Description Requires HttpOnly refresh cookie (name from REFRESH_COOKIE_NAME, default refresh_token) and X-CSRF-Token matching the csrf_token cookie.
+// @Description Supply refresh_token in JSON for non-ambient body-token mode; that request requires no cookie or CSRF. If refresh_token is omitted, the HttpOnly refresh cookie is required together with X-CSRF-Token matching the csrf_token cookie.
 // @Tags auth
 // @Accept json
 // @Produce json
-// @Param X-CSRF-Token header string true "Must match csrf_token cookie"
-// @Param body body RefreshRequestBody false "Optional device metadata"
+// @Param X-CSRF-Token header string false "Required only in cookie mode; must match csrf_token cookie"
+// @Param body body RefreshRequestBody false "Optional device metadata and non-ambient refresh_token; omitting refresh_token selects cookie mode"
 // @Success 200 {object} TokenPairResponse
-// @Failure 401 {object} ErrEnvelope
-// @Failure 403 {object} ErrEnvelope "CSRF validation failed"
+// @Failure 401 {object} ErrEnvelope "Missing or invalid refresh credential"
+// @Failure 403 {object} ErrEnvelope "Cookie-mode CSRF validation failed"
 // @Router /v1/auth/refresh [post]
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -331,13 +344,13 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	//   - HttpOnly cookie: ambient, so require the CSRF double-submit check.
 	token := strings.TrimSpace(body.RefreshToken)
 	if token == "" {
-		if !s.csrfOK(r) {
-			s.writeErr(w, http.StatusForbidden, "csrf validation failed")
-			return
-		}
 		c, err := r.Cookie(s.cfg.RefreshCookieName)
 		if err != nil || c == nil || c.Value == "" {
 			s.writeErr(w, http.StatusUnauthorized, "missing refresh token")
+			return
+		}
+		if !s.csrfOK(r) {
+			s.writeErr(w, http.StatusForbidden, "csrf validation failed")
 			return
 		}
 		token = c.Value
@@ -710,16 +723,25 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 // @Tags roles
 // @Security BearerAuth
 // @Produce json
+// @Param q query string false "Case-insensitive role-name substring"
+// @Param cursor query string false "Opaque keyset cursor; omit on first request"
+// @Param page_size query int false "Items per page (max 100)"
 // @Success 200 {object} RolesListResponse
 // @Failure 500 {object} ErrEnvelope
 // @Router /v1/roles [get]
 func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
-	list, err := s.repo.ListRoles(r.Context())
+	pageSize := pageSize(r)
+	cursor, err := decodeCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+	list, next, total, err := s.repo.SearchRoles(r.Context(), r.URL.Query().Get("q"), cursor, pageSize, cursor == nil)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"roles": list})
+	s.writeJSON(w, http.StatusOK, map[string]any{"roles": list, "page_size": pageSize, "total": total, "next_cursor": encodeCursor(next)})
 }
 
 type createRoleBody struct {
@@ -727,6 +749,14 @@ type createRoleBody struct {
 	Description string   `json:"description"`
 	ParentID    string   `json:"parent_id"`
 	ParentIDs   []string `json:"parent_ids"`
+}
+
+func normalizeRoleName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 100 {
+		return "", errors.New("role name must contain 1 to 100 characters")
+	}
+	return name, nil
 }
 
 // handleCreateRole creates a role (superuser only), optionally under a parent.
@@ -752,19 +782,19 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	var parent *uuid.UUID
+	name, err := normalizeRoleName(b.Name)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	parentIDs := make([]uuid.UUID, 0, len(b.ParentIDs)+1)
 	if p := strings.TrimSpace(b.ParentID); p != "" {
 		pid, err := uuid.Parse(p)
 		if err != nil {
 			s.writeErr(w, http.StatusBadRequest, "bad parent_id")
 			return
 		}
-		parent = &pid
-	}
-	id, err := s.repo.CreateRole(r.Context(), b.Name, b.Description, parent)
-	if err != nil {
-		s.writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		parentIDs = append(parentIDs, pid)
 	}
 	for _, rawParentID := range b.ParentIDs {
 		pid, parseErr := uuid.Parse(strings.TrimSpace(rawParentID))
@@ -772,13 +802,12 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, http.StatusBadRequest, "bad parent_ids")
 			return
 		}
-		if parent != nil && pid == *parent {
-			continue
-		}
-		if mountErr := s.repo.MountRole(r.Context(), id, pid); mountErr != nil {
-			s.writeErr(w, http.StatusBadRequest, mountErr.Error())
-			return
-		}
+		parentIDs = append(parentIDs, pid)
+	}
+	id, err := s.repo.CreateRoleWithParents(r.Context(), name, strings.TrimSpace(b.Description), parentIDs)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	s.writeJSON(w, http.StatusCreated, map[string]string{"role_id": id.String()})
 }
@@ -854,21 +883,10 @@ func (s *Server) handleSetRoleParent(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, http.StatusBadRequest, "bad parent_id")
 			return
 		}
-		// A cycle forms iff the proposed parent is the role itself or a descendant
-		// of it — i.e. roleID is an ancestor of the proposed parent.
-		cycle, err := s.repo.RoleHasAncestor(r.Context(), pid, rid)
-		if err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if cycle {
-			s.writeErr(w, http.StatusBadRequest, "parent would create a cycle")
-			return
-		}
 		parent = &pid
 	}
 	if err := s.repo.SetRoleParent(r.Context(), rid, parent); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -888,11 +906,6 @@ func (s *Server) handleSetRoleParent(w http.ResponseWriter, r *http.Request) {
 // @Router /v1/roles/{roleID}/mounts [post]
 func (s *Server) handleMountRole(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	su, _ := s.auth.IsSuperuser(r.Context(), uid)
-	if !su {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
 	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
@@ -908,17 +921,13 @@ func (s *Server) handleMountRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad parent_id")
 		return
 	}
-	cycle, err := s.repo.RoleHasAncestor(r.Context(), pid, rid)
-	if err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if cycle {
-		s.writeErr(w, http.StatusBadRequest, "mount would create a cycle")
+	allowed, authErr := s.auth.CanMountRole(r.Context(), uid, rid, pid)
+	if authErr != nil || !allowed {
+		s.writeErr(w, http.StatusForbidden, "manager of both roles required")
 		return
 	}
 	if err := s.repo.MountRole(r.Context(), rid, pid); err != nil {
-		s.writeErr(w, http.StatusInternalServerError, err.Error())
+		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -936,11 +945,6 @@ func (s *Server) handleMountRole(w http.ResponseWriter, r *http.Request) {
 // @Router /v1/roles/{roleID}/mounts/{parentID} [delete]
 func (s *Server) handleUnmountRole(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	su, _ := s.auth.IsSuperuser(r.Context(), uid)
-	if !su {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
 	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
@@ -951,7 +955,176 @@ func (s *Server) handleUnmountRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad parent id")
 		return
 	}
+	allowed, authErr := s.auth.CanMountRole(r.Context(), uid, rid, pid)
+	if authErr != nil || !allowed {
+		s.writeErr(w, http.StatusForbidden, "manager of both roles required")
+		return
+	}
 	if err := s.repo.UnmountRole(r.Context(), rid, pid); err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListSubgroups lists direct or recursive descendants.
+// @Summary List role subgroups
+// @Tags roles
+// @Security BearerAuth
+// @Param roleID path string true "Role UUID"
+// @Param recursive query bool false "Include all descendants"
+// @Success 200 {object} RolesListResponse
+// @Router /v1/roles/{roleID}/subgroups [get]
+func (s *Server) handleListSubgroups(w http.ResponseWriter, r *http.Request) {
+	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "bad role id")
+		return
+	}
+	recursive := r.URL.Query().Get("recursive") == "true"
+	roles, err := s.repo.ListSubroles(r.Context(), rid, recursive)
+	if err != nil {
+		s.writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"roles": roles})
+}
+
+func normalizeTags(tags []string) ([]string, error) {
+	if len(tags) > 32 {
+		return nil, errors.New("at most 32 tags are allowed")
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(tags))
+	for _, raw := range tags {
+		tag := strings.ToLower(strings.TrimSpace(raw))
+		if tag == "" || len(tag) > 64 {
+			return nil, errors.New("tags must contain 1 to 64 characters")
+		}
+		if !seen[tag] {
+			seen[tag] = true
+			out = append(out, tag)
+		}
+	}
+	return out, nil
+}
+
+func normalizeRoleTagRename(oldTag, newTag string) (string, string, error) {
+	oldTags, err := normalizeTags([]string{oldTag})
+	if err != nil {
+		return "", "", err
+	}
+	newTags, err := normalizeTags([]string{newTag})
+	if err != nil {
+		return "", "", err
+	}
+	return oldTags[0], newTags[0], nil
+}
+
+// @Summary Add one role tag definition
+// @Tags roles
+// @Security BearerAuth
+// @Param roleID path string true "Role UUID"
+// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param body body RoleTagPairRequest true "Tag pair"
+// @Success 204
+// @Failure 400 {object} ErrEnvelope
+// @Failure 401 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
+// @Router /v1/roles/{roleID}/tags [post]
+func (s *Server) handleAddRoleTag(w http.ResponseWriter, r *http.Request) {
+	s.handleRoleTagPair(w, r, true)
+}
+
+// @Summary Delete one role tag definition
+// @Description Membership grants are preserved so re-adding the definition restores authorization.
+// @Tags roles
+// @Security BearerAuth
+// @Param roleID path string true "Role UUID"
+// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param body body RoleTagPairRequest true "Tag pair"
+// @Success 204
+// @Failure 400 {object} ErrEnvelope
+// @Failure 401 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
+// @Router /v1/roles/{roleID}/tags [delete]
+func (s *Server) handleDeleteRoleTag(w http.ResponseWriter, r *http.Request) {
+	s.handleRoleTagPair(w, r, false)
+}
+
+// @Summary Rename one role tag and migrate its membership grants
+// @Tags roles
+// @Security BearerAuth
+// @Param roleID path string true "Role UUID"
+// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param body body RenameRoleTagRequest true "Old and new tag names"
+// @Success 204
+// @Failure 400 {object} ErrEnvelope
+// @Failure 401 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
+// @Router /v1/roles/{roleID}/tags [patch]
+func (s *Server) handleRenameRoleTag(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserID(r.Context())
+	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "bad role id")
+		return
+	}
+	allowed, err := s.auth.CanAssignRole(r.Context(), actor, rid)
+	if err != nil || !allowed {
+		s.writeErr(w, http.StatusForbidden, "role manager required")
+		return
+	}
+	var body struct {
+		OldTag string `json:"old_tag"`
+		NewTag string `json:"new_tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	oldTag, newTag, err := normalizeRoleTagRename(body.OldTag, body.NewTag)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.repo.RenameRoleTag(r.Context(), rid, oldTag, newTag); err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRoleTagPair(w http.ResponseWriter, r *http.Request, add bool) {
+	actor, _ := UserID(r.Context())
+	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "bad role id")
+		return
+	}
+	allowed, err := s.auth.CanAssignRole(r.Context(), actor, rid)
+	if err != nil || !allowed {
+		s.writeErr(w, http.StatusForbidden, "role manager required")
+		return
+	}
+	var body struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	tags, err := normalizeTags([]string{body.Tag})
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if add {
+		err = s.repo.AddRoleTag(r.Context(), rid, tags[0])
+	} else {
+		err = s.repo.DeleteRoleTag(r.Context(), rid, tags[0])
+	}
+	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -994,7 +1167,7 @@ func (s *Server) handleListRoleMembers(w http.ResponseWriter, r *http.Request) {
 			email = *m.Email
 		}
 		out = append(out, map[string]any{
-			"user_id": m.UserID.String(), "login": m.Login, "email": email, "level": string(m.Level),
+			"user_id": m.UserID.String(), "login": m.Login, "email": email, "level": string(m.Level), "tags": m.Tags,
 		})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"members": out})
@@ -1083,6 +1256,7 @@ type assignBody struct {
 	UserID     string     `json:"user_id"`
 	Level      string     `json:"level"`
 	ValidUntil *time.Time `json:"valid_until"`
+	TagGrants  []string   `json:"tag_grants"`
 }
 
 // handleAssignRole assigns a role membership (authorized assigners only).
@@ -1120,12 +1294,103 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lvl := domain.RoleLevel(b.Level)
-	if lvl != domain.RoleMember && lvl != domain.RoleRoleAdmin {
+	if lvl != domain.RoleDirectMember && lvl != domain.RoleMember && lvl != domain.RoleRoleAdmin {
 		s.writeErr(w, http.StatusBadRequest, "invalid level")
 		return
 	}
 	gb := actor
-	if err := s.repo.AssignUserRole(r.Context(), target, rid, lvl, &gb, time.Now(), b.ValidUntil); err != nil {
+	tags, err := normalizeTags(b.TagGrants)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.repo.AssignUserRoleWithTagGrants(r.Context(), target, rid, lvl, &gb, time.Now(), b.ValidUntil, tags); err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// @Summary Grant one tag to a role membership
+// @Tags roles
+// @Security BearerAuth
+// @Param roleID path string true "Role UUID"
+// @Param userID path string true "User UUID"
+// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param body body RoleTagPairRequest true "Tag"
+// @Success 204
+// @Failure 400 {object} ErrEnvelope
+// @Failure 401 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
+// @Router /v1/roles/{roleID}/members/{userID}/tags [post]
+func (s *Server) handleAddUserRoleTag(w http.ResponseWriter, r *http.Request) {
+	s.handleUserRoleTagPair(w, r, true)
+}
+
+// @Summary Revoke one tag from a role membership
+// @Tags roles
+// @Security BearerAuth
+// @Param roleID path string true "Role UUID"
+// @Param userID path string true "User UUID"
+// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param body body RoleTagPairRequest true "Tag"
+// @Success 204
+// @Failure 400 {object} ErrEnvelope
+// @Failure 401 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
+// @Router /v1/roles/{roleID}/members/{userID}/tags [delete]
+func (s *Server) handleDeleteUserRoleTag(w http.ResponseWriter, r *http.Request) {
+	s.handleUserRoleTagPair(w, r, false)
+}
+
+func (s *Server) handleUserRoleTagPair(w http.ResponseWriter, r *http.Request, add bool) {
+	actor, _ := UserID(r.Context())
+	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "bad role id")
+		return
+	}
+	target, err := uuid.Parse(chi.URLParam(r, "userID"))
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, "bad user id")
+		return
+	}
+	allowed, err := s.auth.CanAssignRole(r.Context(), actor, rid)
+	if err != nil || !allowed {
+		s.writeErr(w, http.StatusForbidden, "role manager required")
+		return
+	}
+	var body struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	tags, err := normalizeTags([]string{body.Tag})
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if add {
+		role, loadErr := s.repo.GetRoleByID(r.Context(), rid)
+		if loadErr != nil || role == nil {
+			s.writeErr(w, http.StatusBadRequest, "role not found")
+			return
+		}
+		configured := false
+		for _, tag := range role.Tags {
+			configured = configured || tag == tags[0]
+		}
+		if !configured {
+			s.writeErr(w, http.StatusBadRequest, "tag is not configured for role")
+			return
+		}
+		err = s.repo.AddUserRoleTag(r.Context(), target, rid, tags[0])
+	} else {
+		err = s.repo.DeleteUserRoleTag(r.Context(), target, rid, tags[0])
+	}
+	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1199,6 +1464,17 @@ func (s *Server) handleRoleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		target = tid
+	}
+	if target != actor {
+		canManage, authErr := s.auth.CanAssignRole(r.Context(), actor, rid)
+		if authErr != nil {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if !canManage {
+			s.writeErr(w, http.StatusForbidden, "only a role manager may request membership for another user")
+			return
+		}
 	}
 	// A role manager (superuser or admin of this role / an ancestor) doesn't need
 	// approval — the membership is granted immediately. Everyone else creates a
@@ -1287,16 +1563,9 @@ func (s *Server) handleDecideRoleRequest(w http.ResponseWriter, r *http.Request)
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := s.repo.DecideRoleRequest(r.Context(), reqID, b.Approve, actor); err != nil {
+	if err := s.repo.DecideRoleRequestWithMembership(r.Context(), reqID, b.Approve, actor, time.Now()); err != nil {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if b.Approve {
-		gb := actor
-		if err := s.repo.AssignUserRole(r.Context(), req.TargetUserID, req.RoleID, domain.RoleMember, &gb, time.Now(), nil); err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

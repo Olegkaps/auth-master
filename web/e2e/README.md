@@ -16,14 +16,12 @@ make test-e2e    # brings up infra + backend, runs the suite, tears down
 builds and runs the backend with a bootstrap superuser and a short
 `ACCESS_TOKEN_TTL` (backend logs go to a temp file so the output is just the
 Playwright summary — `X passed / Y failed` with per-test reasons), runs Playwright
-(which starts the Vite dev server itself), then stops the backend.
+(which starts the Vite dev server itself), then stops the backend and drops only
+the isolated `auth_e2e` database. PostgreSQL and Mailpit remain running for
+faster subsequent runs; use `make down` when you want to stop infrastructure.
 
-To run against an already-running stack you can still call Playwright directly:
-
-```bash
-cd web && npm run e2e        # headless
-cd web && npm run e2e:ui     # interactive UI mode
-```
+Always launch tests through `make test-e2e`; pass a file or Playwright filter
+through `E2E_ARGS`, for example `make test-e2e E2E_ARGS='extra.spec.ts'`.
 
 ## Configuration (env)
 
@@ -45,7 +43,14 @@ cd web && npm run e2e:ui     # interactive UI mode
 - Permissions: non-superuser has no admin surfaces and can't manage others' roles; a
   non-manager's request needs approval while a manager's is auto-granted; member
   list actions (promote / remove) and role deletion.
-- Forgot-password reset: register → reset via email code → sign in with the new password.
+- Effective inherited membership and inherited role-admin UI state, including
+  the non-inheriting `direct_member` level.
+- Keyset pagination beyond the first page and uncapped role selectors with more
+  than one hundred roles.
+- Atomic membership plus initial tag grants, tag revocation, rename, definition
+  delete/re-add preservation, and cross-service role/tag checks.
+- Forgot-password reset: attempt cap and resend, policy rejection followed by a
+  successful retry with the same code, then sign in with the new password.
 - A wrong login OTP drops back to the password step (single OTP attempt).
 - A superuser invite yields an account with admin access.
 - One-click session revoke (no email OTP).

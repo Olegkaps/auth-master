@@ -1,0 +1,115 @@
+package service
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/olegkapshai/auth-master/internal/domain"
+	"github.com/olegkapshai/auth-master/internal/mail"
+	"github.com/stretchr/testify/require"
+)
+
+func TestIntegration_RBACDirectMembershipTagsSearchAndBan(t *testing.T) {
+	repo, done := testDB(t)
+	defer done()
+	ctx := context.Background()
+	auth, err := NewAuth(testConfig(), repo, &mail.Sender{}, nil)
+	require.NoError(t, err)
+
+	userID, err := repo.CreateHumanUser(ctx, "CaseSearchUser", "MixedCase@example.test", "hash")
+	require.NoError(t, err)
+	_, err = repo.CreateHumanUser(ctx, "CaseSearchUserTwo", "second@example.test", "hash")
+	require.NoError(t, err)
+	parent, err := repo.CreateRole(ctx, "Engineering", "", nil)
+	require.NoError(t, err)
+	child, err := repo.CreateRole(ctx, "Platform", "", &parent)
+	require.NoError(t, err)
+	subgroups, err := repo.ListSubroles(ctx, parent, true)
+	require.NoError(t, err)
+	require.Equal(t, child, subgroups[0].ID)
+
+	users, userCursor, total, err := repo.SearchUsers(ctx, "searchu", nil, 1, true)
+	require.NoError(t, err)
+	require.NotNil(t, userCursor)
+	require.EqualValues(t, 2, *total)
+	require.Equal(t, userID, users[0].ID)
+	users, nextCursor, subsequentTotal, err := repo.SearchUsers(ctx, "searchu", userCursor, 1, false)
+	require.NoError(t, err)
+	require.Nil(t, nextCursor)
+	require.Nil(t, subsequentTotal, "cursor pages must not repeat the count query")
+	require.Len(t, users, 1)
+	roles, roleCursor, total, err := repo.SearchRoles(ctx, "GINE", nil, 10, true)
+	require.NoError(t, err)
+	require.Nil(t, roleCursor)
+	require.EqualValues(t, 1, *total)
+	require.Equal(t, parent, roles[0].ID)
+
+	require.NoError(t, repo.AddRoleTag(ctx, parent, "read"))
+	require.NoError(t, repo.AddRoleTag(ctx, parent, "write"))
+	require.NoError(t, repo.AssignUserRole(ctx, userID, parent, domain.RoleDirectMember, &userID, time.Now(), nil))
+	hasParent, err := auth.UserHasRoleName(ctx, userID, "engineering")
+	require.NoError(t, err)
+	require.True(t, hasParent)
+	hasChild, err := auth.UserHasRoleName(ctx, userID, "platform")
+	require.NoError(t, err)
+	require.False(t, hasChild, "direct membership must not inherit")
+
+	require.NoError(t, repo.AssignUserRole(ctx, userID, parent, domain.RoleMember, &userID, time.Now(), nil))
+	require.NoError(t, repo.AddUserRoleTag(ctx, userID, parent, "read"))
+	hasTaggedChild, err := auth.UserHasRoleWithTag(ctx, userID, "PLATFORM", "READ")
+	require.NoError(t, err)
+	require.True(t, hasTaggedChild, "membership and tags inherit to subroles")
+	hasWrite, err := auth.UserHasRoleWithTag(ctx, userID, "platform", "write")
+	require.NoError(t, err)
+	require.False(t, hasWrite, "configured role tags are not automatically granted to a membership")
+	require.NoError(t, repo.RenameRoleTag(ctx, parent, "read", "view"))
+	hasRead, err := auth.UserHasRoleWithTag(ctx, userID, "platform", "read")
+	require.NoError(t, err)
+	require.False(t, hasRead, "the old tag name must stop authorizing")
+	hasView, err := auth.UserHasRoleWithTag(ctx, userID, "platform", "view")
+	require.NoError(t, err)
+	require.True(t, hasView, "renaming must migrate grants and preserve inheritance")
+	members, err := repo.ListRoleMembers(ctx, parent, time.Now())
+	require.NoError(t, err)
+	require.Contains(t, members[0].Tags, "view")
+	require.NotContains(t, members[0].Tags, "read")
+
+	require.NoError(t, repo.DeleteRoleTag(ctx, parent, "view"))
+	hasView, err = auth.UserHasRoleWithTag(ctx, userID, "platform", "view")
+	require.NoError(t, err)
+	require.False(t, hasView, "removing the definition disables the tag")
+	members, err = repo.ListRoleMembers(ctx, parent, time.Now())
+	require.NoError(t, err)
+	require.Contains(t, members[0].Tags, "view", "definition changes must preserve membership grants")
+	require.NoError(t, repo.AddRoleTag(ctx, parent, "view"))
+	hasView, err = auth.UserHasRoleWithTag(ctx, userID, "platform", "view")
+	require.NoError(t, err)
+	require.True(t, hasView, "re-adding the pair restores the preserved inherited grant")
+
+	require.NoError(t, repo.SetUserBan(ctx, userID, &userID, "security incident"))
+	banned, err := repo.GetUserByID(ctx, userID)
+	require.NoError(t, err)
+	require.NotNil(t, banned.BannedAt)
+	require.Equal(t, "security incident", banned.BanReason)
+	require.NoError(t, repo.SetUserBan(ctx, userID, nil, ""))
+}
+
+func TestIntegration_ManagerMustControlBothRolesToMount(t *testing.T) {
+	repo, done := testDB(t)
+	defer done()
+	ctx := context.Background()
+	auth, err := NewAuth(testConfig(), repo, &mail.Sender{}, nil)
+	require.NoError(t, err)
+	manager, _ := repo.CreateHumanUser(ctx, "mountmanager", "mount@test.dev", "hash")
+	child, _ := repo.CreateRole(ctx, "mount-child", "", nil)
+	parent, _ := repo.CreateRole(ctx, "mount-parent", "", nil)
+	require.NoError(t, repo.AssignUserRole(ctx, manager, child, domain.RoleRoleAdmin, &manager, time.Now(), nil))
+	allowed, err := auth.CanMountRole(ctx, manager, child, parent)
+	require.NoError(t, err)
+	require.False(t, allowed)
+	require.NoError(t, repo.AssignUserRole(ctx, manager, parent, domain.RoleRoleAdmin, &manager, time.Now(), nil))
+	allowed, err = auth.CanMountRole(ctx, manager, child, parent)
+	require.NoError(t, err)
+	require.True(t, allowed)
+}

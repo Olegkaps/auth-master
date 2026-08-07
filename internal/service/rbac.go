@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +14,18 @@ func (a *Auth) IsSuperuser(ctx context.Context, userID uuid.UUID) (bool, error) 
 	if err != nil || u == nil {
 		return false, err
 	}
+	if u.BannedAt != nil {
+		return false, ErrBanned
+	}
 	return u.Superuser, nil
+}
+
+func (a *Auth) IsBanned(ctx context.Context, userID uuid.UUID) (bool, error) {
+	u, err := a.repo.GetUserByID(ctx, userID)
+	if err != nil || u == nil {
+		return false, err
+	}
+	return u.BannedAt != nil, nil
 }
 
 // UserHasRoleName reports whether the user holds a role — directly OR via the
@@ -21,6 +33,12 @@ func (a *Auth) IsSuperuser(ctx context.Context, userID uuid.UUID) (bool, error) 
 // is evaluated live, so it reflects hierarchy changes and roles created after
 // the membership was granted.
 func (a *Auth) UserHasRoleName(ctx context.Context, userID uuid.UUID, roleName string) (bool, error) {
+	if banned, err := a.IsBanned(ctx, userID); err != nil || banned {
+		if banned {
+			return false, ErrBanned
+		}
+		return false, err
+	}
 	role, err := a.repo.GetRoleByName(ctx, roleName)
 	if err != nil {
 		return false, err
@@ -28,45 +46,46 @@ func (a *Auth) UserHasRoleName(ctx context.Context, userID uuid.UUID, roleName s
 	if role == nil {
 		return false, nil
 	}
-	ancestors, err := a.repo.RoleAncestors(ctx, role.ID)
-	if err != nil {
+	return a.repo.UserHasEffectiveRole(ctx, userID, role.ID, time.Now())
+}
+
+func (a *Auth) UserHasRoleWithTag(ctx context.Context, userID uuid.UUID, roleName, tag string) (bool, error) {
+	if banned, err := a.IsBanned(ctx, userID); err != nil || banned {
+		if banned {
+			return false, ErrBanned
+		}
 		return false, err
 	}
-	if len(ancestors) == 0 {
-		ancestors = []uuid.UUID{role.ID}
+	role, err := a.repo.GetRoleByName(ctx, roleName)
+	if err != nil || role == nil {
+		return false, err
 	}
-	now := time.Now()
-	for _, rid := range ancestors {
-		if _, ok, err := a.repo.GetUserRoleLevel(ctx, userID, rid, now); err != nil {
-			return false, err
-		} else if ok {
-			return true, nil
-		}
-	}
-	return false, nil
+	return a.repo.UserHasEffectiveRoleTag(ctx, userID, role.ID, strings.ToLower(strings.TrimSpace(tag)), time.Now())
 }
 
 // IsRoleAdmin reports whether the user is a role admin of the role OR of any of
 // its ancestors — role-admin authority is inherited down the hierarchy.
 func (a *Auth) IsRoleAdmin(ctx context.Context, userID, roleID uuid.UUID) (bool, error) {
-	ancestors, err := a.repo.RoleAncestors(ctx, roleID)
-	if err != nil {
+	if banned, err := a.IsBanned(ctx, userID); err != nil || banned {
+		if banned {
+			return false, ErrBanned
+		}
 		return false, err
 	}
-	if len(ancestors) == 0 {
-		ancestors = []uuid.UUID{roleID} // role has no parent chain rows; still check itself
+	return a.repo.UserIsEffectiveRoleAdmin(ctx, userID, roleID, time.Now())
+}
+
+// CanMountRole requires management authority over both endpoints to prevent a
+// manager from attaching their role below a more privileged hierarchy.
+func (a *Auth) CanMountRole(ctx context.Context, actorID, childID, parentID uuid.UUID) (bool, error) {
+	if su, err := a.IsSuperuser(ctx, actorID); err != nil || su {
+		return su, err
 	}
-	now := time.Now()
-	for _, rid := range ancestors {
-		lvl, ok, err := a.repo.GetUserRoleLevel(ctx, userID, rid, now)
-		if err != nil {
-			return false, err
-		}
-		if ok && lvl == domain.RoleRoleAdmin {
-			return true, nil
-		}
+	child, err := a.IsRoleAdmin(ctx, actorID, childID)
+	if err != nil || !child {
+		return false, err
 	}
-	return false, nil
+	return a.IsRoleAdmin(ctx, actorID, parentID)
 }
 
 func (a *Auth) CanAssignRole(ctx context.Context, actorID, roleID uuid.UUID) (bool, error) {
@@ -94,6 +113,9 @@ func (a *Auth) RequestRoleMembership(ctx context.Context, actor, target, roleID 
 			return false, uuid.Nil, err
 		}
 		return true, uuid.Nil, nil
+	}
+	if actor != target {
+		return false, uuid.Nil, ErrForbidden
 	}
 	id, err := a.repo.CreateRoleRequest(ctx, actor, target, roleID)
 	return false, id, err

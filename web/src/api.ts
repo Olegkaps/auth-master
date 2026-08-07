@@ -6,6 +6,9 @@
 // endpoint wrappers. A production app would generate this client from the
 // OpenAPI spec at /swagger/doc.json.
 
+import { classifyRefreshResponse, type RefreshOutcome } from './refresh-outcome.js'
+import { singleFlightByKey } from './single-flight.js'
+
 const API_BASE = '' // same-origin; the Vite dev server proxies /v1 to the backend.
 
 // ---- Session state (in-memory; refresh token lives in an HttpOnly cookie) ----
@@ -95,7 +98,8 @@ function headers(o: Opts): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' }
   const bearer = o.bearer ?? (o.skipAuth ? '' : session.accessToken)
   if (bearer) h['Authorization'] = `Bearer ${bearer}`
-  if (session.csrfToken && o.method && o.method !== 'GET') h['X-CSRF-Token'] = session.csrfToken
+  const csrfToken = readCookie('csrf_token') || session.csrfToken
+  if (csrfToken && o.method && o.method !== 'GET') h['X-CSRF-Token'] = csrfToken
   return h
 }
 
@@ -123,19 +127,32 @@ export function decodeJwtSub(token: string): string {
  * carries its own refresh token, any account can refresh regardless of the
  * shared cookie. The rotated refresh token is stored back on the session.
  */
-export async function refresh(): Promise<boolean> {
-  if (!session.refreshToken) return false
-  const res = await fetch(`${API_BASE}/v1/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device_id: session.deviceId, device_label: deviceLabel(), refresh_token: session.refreshToken }),
-  })
-  if (!res.ok) return false
-  const j = await res.json().catch(() => ({}))
-  session.refreshToken = (j.refresh_token as string) || session.refreshToken
-  setTokens((j.access_token as string) ?? '', '', j.expires_at ?? '')
-  return true
+const refreshByToken = singleFlightByKey<string, RefreshOutcome>(async (refreshToken) => {
+  try {
+    const res = await fetch(`${API_BASE}/v1/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: session.deviceId, device_label: deviceLabel(), refresh_token: refreshToken }),
+    })
+    const payload: unknown = await res.json().catch(() => null)
+    const outcome = classifyRefreshResponse(res.status, payload)
+    // An account switch may finish while this request is in flight. Never let
+    // an old account's response overwrite the newly active account.
+    if (outcome.kind === 'ok' && session.refreshToken === refreshToken) {
+      session.refreshToken = outcome.refreshToken
+      setTokens(outcome.accessToken, '', outcome.expiresAt)
+    }
+    return outcome
+  } catch {
+    return { kind: 'transient', status: 0, reason: 'network error' }
+  }
+})
+
+export async function refresh(): Promise<RefreshOutcome> {
+  const refreshToken = session.refreshToken
+  if (!refreshToken) return { kind: 'invalid', status: 0 }
+  return refreshByToken(refreshToken)
 }
 
 // Called when the refresh token itself is dead — lets the app route to /login.
@@ -156,18 +173,27 @@ async function call<T>(path: string, o: Opts = {}): Promise<T> {
   const canRefresh = !o.noRefresh && !o.skipAuth && !o.bearer && session.accessToken !== ''
 
   // Proactive: rotate a nearly-expired access token before spending a round trip.
-  if (canRefresh && expiringSoon()) await refresh()
+  if (canRefresh && expiringSoon()) {
+    const proactive = await refresh()
+    if (proactive.kind === 'invalid') {
+      clearSession()
+      onUnauthorized()
+    }
+  }
 
   let res = await raw(path, o)
 
   // Reactive: refresh on a stale signing key (rotation) or an expired token (401).
   const needsRefresh = canRefresh && (res.headers.get('X-Token-Stale') === '1' || res.status === 401)
   if (needsRefresh) {
-    if (await refresh()) {
+    const outcome = await refresh()
+    if (outcome.kind === 'ok') {
       res = await raw(path, o)
-    } else {
+    } else if (outcome.kind === 'invalid') {
       clearSession()
       onUnauthorized()
+    } else {
+      throw new ApiError(outcome.status, `Session refresh temporarily unavailable: ${outcome.reason}`)
     }
   }
 
@@ -191,18 +217,20 @@ export interface Role {
   name: string
   description: string
   parentIds: string[]
+	  tags: string[]
 }
 export interface RoleMember {
   userId: string
   login: string
   email: string | null
-  level: 'member' | 'role_admin'
+  level: 'direct_member' | 'member' | 'role_admin'
+	  tags: string[]
 }
 export interface UserRole {
   id: string
   userId: string
   roleId: string
-  level: 'member' | 'role_admin'
+  level: 'direct_member' | 'member' | 'role_admin'
   validUntil: string | null
 }
 export interface RoleRequest {
@@ -218,6 +246,8 @@ export interface AdminUser {
   email: string | null
   kind: string
   superuser: boolean
+	  bannedAt: string | null
+	  banReason: string
   createdAt: string
 }
 export interface Session {
@@ -279,6 +309,7 @@ export const api = {
   // me
   me: () => call<MeUser>('/v1/me'),
   hasRole: (name: string) => call<{ has_role: boolean }>(`/v1/me/has-role?role_name=${encodeURIComponent(name)}`),
+  roleAccess: () => call<{ roles: Array<{ role_id: string; can_manage: boolean }> }>('/v1/me/role-access'),
 
   // sessions
   listSessions: () =>
@@ -296,10 +327,18 @@ export const api = {
   revokeSession: (id: string) => call<null>(`/v1/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // roles
-  listRoles: () =>
-    call<{ roles: Array<{ ID: string; Name: string; Description: string; ParentIDs?: string[] }> }>('/v1/roles').then((r) =>
-      r.roles.map((x): Role => ({ id: x.ID, name: x.Name, description: x.Description, parentIds: x.ParentIDs ?? [] })),
-    ),
+  searchRoles: (q = '', cursor = '', pageSize = 25) =>
+	  call<{ roles: Array<{ ID: string; Name: string; Description: string; ParentIDs?: string[]; Tags?: string[] }>; total: number | null; next_cursor: string; page_size: number }>(`/v1/roles?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&page_size=${pageSize}`).then((r) => ({ ...r, roles: r.roles.map((x): Role => ({ id: x.ID, name: x.Name, description: x.Description, parentIds: x.ParentIDs ?? [], tags: x.Tags ?? [] })) })),
+  listRoles: async () => {
+    const roles: Role[] = []
+    let cursor = ''
+    do {
+      const page = await api.searchRoles('', cursor, 100)
+      roles.push(...page.roles)
+      cursor = page.next_cursor
+    } while (cursor)
+    return roles
+  },
   createRole: (name: string, description: string, parent_id?: string) =>
     call<{ role_id: string }>('/v1/roles', { method: 'POST', body: { name, description, parent_id: parent_id || '' } }),
   deleteRole: (roleId: string) => call<null>(`/v1/roles/${encodeURIComponent(roleId)}`, { method: 'DELETE' }),
@@ -311,9 +350,13 @@ export const api = {
     call<null>(`/v1/roles/${encodeURIComponent(roleId)}/mounts`, { method: 'POST', body: { parent_id } }),
   unmountRole: (roleId: string, parentId: string) =>
     call<null>(`/v1/roles/${encodeURIComponent(roleId)}/mounts/${encodeURIComponent(parentId)}`, { method: 'DELETE' }),
+  listSubgroups: (roleId: string, recursive = false) => call<{ roles: Array<{ ID: string; Name: string; Description: string; ParentIDs?: string[]; Tags?: string[] }> }>(`/v1/roles/${encodeURIComponent(roleId)}/subgroups?recursive=${recursive}`).then((r) => r.roles.map((x) => ({ id: x.ID, name: x.Name, description: x.Description, parentIds: x.ParentIDs ?? [], tags: x.Tags ?? [] }))),
+	addRoleTag: (roleId: string, tag: string) => call<null>(`/v1/roles/${encodeURIComponent(roleId)}/tags`, { method: 'POST', body: { tag } }),
+	deleteRoleTag: (roleId: string, tag: string) => call<null>(`/v1/roles/${encodeURIComponent(roleId)}/tags`, { method: 'DELETE', body: { tag } }),
+	renameRoleTag: (roleId: string, old_tag: string, new_tag: string) => call<null>(`/v1/roles/${encodeURIComponent(roleId)}/tags`, { method: 'PATCH', body: { old_tag, new_tag } }),
   listRoleMembers: (roleId: string) =>
-    call<{ members: Array<{ user_id: string; login: string; email: string | null; level: string }> }>(`/v1/roles/${encodeURIComponent(roleId)}/members`).then((r) =>
-      r.members.map((m): RoleMember => ({ userId: m.user_id, login: m.login, email: m.email, level: m.level as RoleMember['level'] })),
+    call<{ members: Array<{ user_id: string; login: string; email: string | null; level: string; tags: string[] }> }>(`/v1/roles/${encodeURIComponent(roleId)}/members`).then((r) =>
+      r.members.map((m): RoleMember => ({ userId: m.user_id, login: m.login, email: m.email, level: m.level as RoleMember['level'], tags: m.tags ?? [] })),
     ),
   userRoles: (userId: string) =>
     call<{ user_roles: Array<{ ID: string; UserID: string; RoleID: string; Level: string; ValidUntil: string | null }> }>(
@@ -321,8 +364,10 @@ export const api = {
     ).then((r) =>
       r.user_roles.map((x): UserRole => ({ id: x.ID, userId: x.UserID, roleId: x.RoleID, level: x.Level as UserRole['level'], validUntil: x.ValidUntil })),
     ),
-  assignRole: (roleId: string, user_id: string, level: 'member' | 'role_admin', valid_until?: string | null) =>
-    call<null>(`/v1/roles/${encodeURIComponent(roleId)}/members`, { method: 'POST', body: { user_id, level, valid_until: valid_until || null } }),
+  assignRole: (roleId: string, user_id: string, level: 'direct_member' | 'member' | 'role_admin', valid_until?: string | null, tag_grants?: string[]) =>
+	  call<null>(`/v1/roles/${encodeURIComponent(roleId)}/members`, { method: 'POST', body: { user_id, level, valid_until: valid_until || null, ...(tag_grants === undefined ? {} : { tag_grants }) } }),
+	addUserRoleTag: (roleId: string, userId: string, tag: string) => call<null>(`/v1/roles/${encodeURIComponent(roleId)}/members/${encodeURIComponent(userId)}/tags`, { method: 'POST', body: { tag } }),
+	deleteUserRoleTag: (roleId: string, userId: string, tag: string) => call<null>(`/v1/roles/${encodeURIComponent(roleId)}/members/${encodeURIComponent(userId)}/tags`, { method: 'DELETE', body: { tag } }),
   removeRole: (roleId: string, userId: string) =>
     call<null>(`/v1/roles/${encodeURIComponent(roleId)}/members/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
   requestRole: (roleId: string, target_user_id?: string) =>
@@ -337,8 +382,19 @@ export const api = {
     call<null>(`/v1/role-requests/${encodeURIComponent(requestId)}/decide`, { method: 'POST', body: { approve } }),
 
   // admin
-  listUsers: (limit = 100) =>
-    call<{ users: AdminUser[] }>(`/v1/admin/users?limit=${limit}`).then((r) => r.users),
+  searchUsers: (q = '', cursor = '', pageSize = 25) => call<{ users: Array<{ id: string; login: string; email: string | null; kind: string; superuser: boolean; banned_at: string | null; ban_reason: string; created_at: string }>; total: number | null; next_cursor: string; page_size: number }>(`/v1/admin/users?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&page_size=${pageSize}`).then((r) => ({ ...r, users: r.users.map((u) => ({ id: u.id, login: u.login, email: u.email, kind: u.kind, superuser: u.superuser, bannedAt: u.banned_at, banReason: u.ban_reason, createdAt: u.created_at })) })),
+  listUsers: async (limit = Number.MAX_SAFE_INTEGER) => {
+    const users: AdminUser[] = []
+    let cursor = ''
+    do {
+      const page = await api.searchUsers('', cursor, Math.min(100, limit - users.length))
+      users.push(...page.users)
+      cursor = page.next_cursor
+    } while (cursor && users.length < limit)
+    return users
+  },
+  banUser: (userId: string, reason: string) => call<null>(`/v1/admin/users/${encodeURIComponent(userId)}/ban`, { method: 'POST', body: { reason } }),
+  unbanUser: (userId: string) => call<null>(`/v1/admin/users/${encodeURIComponent(userId)}/ban`, { method: 'DELETE' }),
   createInvite: (email: string, ttl_seconds: number, superuser = false) =>
     call<{ token: string; expires_at: string; registration_url: string }>('/v1/admin/registration-invites', {
       method: 'POST',

@@ -4,7 +4,7 @@
 #   1. start PostgreSQL and Mailpit through Compose;
 #   2. run the backend with a short access-token TTL;
 #   3. run Playwright with its actionable list reporter;
-#   4. stop the backend on exit.
+#   4. use and remove an isolated database, then stop the backend on exit.
 #
 # Arguments are forwarded to Playwright, for example: ./scripts/e2e.sh extra.spec.ts
 # =============================================================================
@@ -21,9 +21,9 @@ ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-Adm1n!Passw0rd123}"
 
 echo "==> infrastructure: PostgreSQL + Mailpit"
 $COMPOSE up -d postgres mailpit
-# The E2E runner owns port 8080. Stop a Compose-managed backend left by make up
-# so the freshly built binary cannot silently lose the bind race to stale code.
-$COMPOSE stop authd >/dev/null 2>&1 || true
+# The E2E runner owns port 8080. Stop a production stack left by make up so the
+# freshly built binary cannot silently lose the bind race to stale code.
+$COMPOSE stop web authd >/dev/null 2>&1 || true
 
 echo "==> waiting for PostgreSQL"
 for _ in $(seq 1 30); do
@@ -33,8 +33,19 @@ done
 
 BACKEND_PID=""
 BACKEND_LOG="$(mktemp -t authd-e2e.XXXXXX.log)"
-cleanup() { [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null || true; }
+BACKEND_BIN=""
+E2E_DB="auth_e2e"
+cleanup() {
+  [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null || true
+  $COMPOSE exec -T postgres dropdb -U auth --if-exists --force "$E2E_DB" >/dev/null 2>&1 || true
+  [ -n "$BACKEND_BIN" ] && rm -f "$BACKEND_BIN"
+  rm -f "$BACKEND_LOG"
+}
 trap cleanup EXIT
+
+echo "==> reset isolated E2E database"
+$COMPOSE exec -T postgres dropdb -U auth --if-exists --force "$E2E_DB"
+$COMPOSE exec -T postgres createdb -U auth "$E2E_DB"
 
 # Build and run a binary directly. With go run, the child process can survive
 # its parent and keep stdout open. Store backend logs separately so make prints
@@ -44,9 +55,11 @@ BACKEND_BIN="$(mktemp -t authd-e2e.XXXXXX)"
 go build -o "$BACKEND_BIN" ./cmd/authd
 
 echo "==> backend (ACCESS_TOKEN_TTL=${ACCESS_TTL_SEC}s, logs: $BACKEND_LOG)"
-DATABASE_URL="postgres://auth:auth@localhost:5432/auth?sslmode=disable" \
+DATABASE_URL="postgres://auth:auth@localhost:5432/${E2E_DB}?sslmode=disable" \
 SMTP_HOST=localhost SMTP_PORT=1025 \
 ACCESS_TOKEN_TTL="${ACCESS_TTL_SEC}s" \
+OTP_MAX_ATTEMPTS=3 \
+OTP_RESET_MIN_INTERVAL=0s \
 BOOTSTRAP_SUPERUSER_LOGIN="$ADMIN_LOGIN" \
 BOOTSTRAP_SUPERUSER_EMAIL="$ADMIN_EMAIL" \
 BOOTSTRAP_SUPERUSER_PASSWORD="$ADMIN_PASSWORD" \

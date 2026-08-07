@@ -4,7 +4,6 @@ package covgate_test
 
 import (
 	"context"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,11 +97,8 @@ func TestInternalCoverageAtLeast70Percent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Statement totals are fractional; 69.8% and 70.0% differ by a handful of branches across internal/*.
-	// Gate on the percentage rounded to the nearest integer so "70%" matches human/readable reporting.
-	rounded := int(math.Round(pct))
-	t.Logf("combined internal coverage: %.1f%% (nearest integer %d%%)", pct, rounded)
-	if rounded < 70 {
-		t.Fatalf("coverage %.1f%% (~%d%% rounded) is below 70%% (integration tests with container runtime included)", pct, rounded)
+	t.Logf("combined internal coverage: %.1f%%", pct)
+	if pct < 70.0 {
+		t.Fatalf("coverage %.1f%% is below 70.0%% (integration tests with container runtime included)", pct)
 	}
 }

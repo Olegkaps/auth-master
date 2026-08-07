@@ -35,6 +35,9 @@ func TestLoad_ok(t *testing.T) {
 	if c.MaxSessionsPerUser != 10 {
 		t.Fatal(c.MaxSessionsPerUser)
 	}
+	if c.OTPMaxAttempts != 5 || c.OTPResetMinInterval.String() != "1m0s" {
+		t.Fatalf("unexpected OTP limits: attempts=%d interval=%s", c.OTPMaxAttempts, c.OTPResetMinInterval)
+	}
 }
 
 func TestLoad_HTTPAddrAndCORS(t *testing.T) {

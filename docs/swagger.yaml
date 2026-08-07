@@ -2,10 +2,16 @@ basePath: /
 definitions:
   httptransport.AdminUserRow:
     properties:
+      ban_reason:
+        type: string
+      banned_at:
+        type: string
+        x-nullable: true
       created_at:
         type: string
       email:
         type: string
+        x-nullable: true
       id:
         type: string
       kind:
@@ -17,6 +23,13 @@ definitions:
     type: object
   httptransport.AdminUsersResponse:
     properties:
+      next_cursor:
+        type: string
+      page_size:
+        type: integer
+      total:
+        type: integer
+        x-nullable: true
       users:
         items:
           $ref: '#/definitions/httptransport.AdminUserRow'
@@ -26,9 +39,21 @@ definitions:
     properties:
       level:
         type: string
+      tag_grants:
+        description: |-
+          TagGrants are atomically added as individual membership-tag pairs. Existing
+          grants are preserved; use the pair DELETE endpoint to revoke one.
+        items:
+          type: string
+        type: array
       user_id:
         type: string
       valid_until:
+        type: string
+    type: object
+  httptransport.BanUserRequest:
+    properties:
+      reason:
         type: string
     type: object
   httptransport.ChangePasswordRequestBody:
@@ -84,6 +109,20 @@ definitions:
       approve:
         type: boolean
     type: object
+  httptransport.EffectiveRoleAccessResponse:
+    properties:
+      roles:
+        items:
+          $ref: '#/definitions/httptransport.EffectiveRoleAccessRow'
+        type: array
+    type: object
+  httptransport.EffectiveRoleAccessRow:
+    properties:
+      can_manage:
+        type: boolean
+      role_id:
+        type: string
+    type: object
   httptransport.ErrEnvelope:
     properties:
       error:
@@ -92,6 +131,11 @@ definitions:
   httptransport.HasRoleResponse:
     properties:
       has_role:
+        type: boolean
+    type: object
+  httptransport.HasRoleWithTagResponse:
+    properties:
+      has_role_with_tag:
         type: boolean
     type: object
   httptransport.LoginOTPResponse:
@@ -197,13 +241,17 @@ definitions:
   httptransport.RefreshRequestBody:
     properties:
       device_id:
+        description: DeviceID optionally binds the rotated session to a stable client
+          device.
         type: string
       device_label:
+        description: DeviceLabel optionally records a human-readable client label.
         type: string
       refresh_token:
         description: |-
           RefreshToken lets a multi-account client refresh a specific account without
-          the cookie (non-ambient, so no CSRF header is required for this path).
+          a request cookie (non-ambient body-token mode, so no CSRF header is required). When
+          omitted, the refresh cookie and matching X-CSRF-Token are both required.
         type: string
     type: object
   httptransport.RegisterCreatedResponse:
@@ -233,6 +281,13 @@ definitions:
       valid:
         type: boolean
     type: object
+  httptransport.RenameRoleTagRequest:
+    properties:
+      new_tag:
+        type: string
+      old_tag:
+        type: string
+    type: object
   httptransport.RoleDTO:
     properties:
       CreatedAt:
@@ -247,14 +302,24 @@ definitions:
         items:
           type: string
         type: array
+      Tags:
+        items:
+          type: string
+        type: array
     type: object
   httptransport.RoleMemberRow:
     properties:
-      email: {}
+      email:
+        type: string
+        x-nullable: true
       level:
         type: string
       login:
         type: string
+      tags:
+        items:
+          type: string
+        type: array
       user_id:
         type: string
     type: object
@@ -300,12 +365,24 @@ definitions:
           $ref: '#/definitions/httptransport.RoleRequestRow'
         type: array
     type: object
+  httptransport.RoleTagPairRequest:
+    properties:
+      tag:
+        type: string
+    type: object
   httptransport.RolesListResponse:
     properties:
+      next_cursor:
+        type: string
+      page_size:
+        type: integer
       roles:
         items:
           $ref: '#/definitions/httptransport.RoleDTO'
         type: array
+      total:
+        type: integer
+        x-nullable: true
     type: object
   httptransport.ServiceTokenRequestBody:
     properties:
@@ -387,6 +464,22 @@ definitions:
   httptransport.StepUp2FAStatusResponse:
     properties:
       status:
+        type: string
+    type: object
+  httptransport.TokenHasRoleRequest:
+    properties:
+      role_name:
+        type: string
+      token:
+        type: string
+    type: object
+  httptransport.TokenHasRoleWithTagRequest:
+    properties:
+      role_name:
+        type: string
+      tag:
+        type: string
+      token:
         type: string
     type: object
   httptransport.TokenIntrospectionResponse:
@@ -532,9 +625,17 @@ paths:
   /v1/admin/users:
     get:
       parameters:
-      - description: Max users (default 100, max 500)
+      - description: Case-insensitive login or email substring
         in: query
-        name: limit
+        name: q
+        type: string
+      - description: Opaque keyset cursor; omit on first request
+        in: query
+        name: cursor
+        type: string
+      - description: Items per page (max 100)
+        in: query
+        name: page_size
         type: integer
       produces:
       - application/json
@@ -556,6 +657,155 @@ paths:
       summary: List users
       tags:
       - admin
+  /v1/admin/users/{userID}/ban:
+    delete:
+      parameters:
+      - description: User UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Unban user
+      tags:
+      - admin
+    post:
+      parameters:
+      - description: User UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Reason
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.BanUserRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Ban user
+      tags:
+      - admin
+  /v1/auth/has-role:
+    post:
+      consumes:
+      - application/json
+      description: Intended for another service authorizing a human caller. The user
+        ID is derived only from the verified access token.
+      parameters:
+      - description: Access token and role name
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.TokenHasRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.HasRoleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Check a role using an access token from JSON
+      tags:
+      - auth
+  /v1/auth/has-role-with-tag:
+    post:
+      consumes:
+      - application/json
+      description: Intended for another service authorizing a human caller. Role and
+        tag inheritance use the normal authorization rules.
+      parameters:
+      - description: Access token, role name, and tag
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.TokenHasRoleWithTagRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.HasRoleWithTagResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      summary: Check a role tag using an access token from JSON
+      tags:
+      - auth
   /v1/auth/login:
     post:
       consumes:
@@ -834,15 +1084,17 @@ paths:
     post:
       consumes:
       - application/json
-      description: Requires HttpOnly refresh cookie (name from REFRESH_COOKIE_NAME,
-        default refresh_token) and X-CSRF-Token matching the csrf_token cookie.
+      description: Supply refresh_token in JSON for non-ambient body-token mode; that
+        request requires no cookie or CSRF. If refresh_token is omitted, the HttpOnly
+        refresh cookie is required together with X-CSRF-Token matching the csrf_token
+        cookie.
       parameters:
-      - description: Must match csrf_token cookie
+      - description: Required only in cookie mode; must match csrf_token cookie
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
-      - description: Optional device metadata
+      - description: Optional device metadata and non-ambient refresh_token; omitting
+          refresh_token selects cookie mode
         in: body
         name: body
         schema:
@@ -855,11 +1107,11 @@ paths:
           schema:
             $ref: '#/definitions/httptransport.TokenPairResponse'
         "401":
-          description: Unauthorized
+          description: Missing or invalid refresh credential
           schema:
             $ref: '#/definitions/httptransport.ErrEnvelope'
         "403":
-          description: CSRF validation failed
+          description: Cookie-mode CSRF validation failed
           schema:
             $ref: '#/definitions/httptransport.ErrEnvelope'
       summary: Refresh access token
@@ -1180,6 +1432,51 @@ paths:
       summary: Check named role
       tags:
       - me
+  /v1/me/has-role-with-tag:
+    get:
+      parameters:
+      - description: Role name
+        in: query
+        name: role_name
+        required: true
+        type: string
+      - description: Capability tag
+        in: query
+        name: tag
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.HasRoleWithTagResponse'
+      security:
+      - BearerAuth: []
+      summary: Check named role and inherited tag
+      tags:
+      - me
+  /v1/me/role-access:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.EffectiveRoleAccessResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: List effective role access for current user
+      tags:
+      - me
   /v1/role-requests/{requestID}/decide:
     post:
       consumes:
@@ -1224,6 +1521,19 @@ paths:
       - roles
   /v1/roles:
     get:
+      parameters:
+      - description: Case-insensitive role-name substring
+        in: query
+        name: q
+        type: string
+      - description: Opaque keyset cursor; omit on first request
+        in: query
+        name: cursor
+        type: string
+      - description: Items per page (max 100)
+        in: query
+        name: page_size
+        type: integer
       produces:
       - application/json
       responses:
@@ -1436,6 +1746,93 @@ paths:
       summary: Remove role membership
       tags:
       - roles
+  /v1/roles/{roleID}/members/{userID}/tags:
+    delete:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: User UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Tag
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.RoleTagPairRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Revoke one tag from a role membership
+      tags:
+      - roles
+    post:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: User UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Tag
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.RoleTagPairRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Grant one tag to a role membership
+      tags:
+      - roles
   /v1/roles/{roleID}/mounts:
     post:
       consumes:
@@ -1599,6 +1996,145 @@ paths:
       security:
       - BearerAuth: []
       summary: Request role membership
+      tags:
+      - roles
+  /v1/roles/{roleID}/subgroups:
+    get:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: Include all descendants
+        in: query
+        name: recursive
+        type: boolean
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httptransport.RolesListResponse'
+      security:
+      - BearerAuth: []
+      summary: List role subgroups
+      tags:
+      - roles
+  /v1/roles/{roleID}/tags:
+    delete:
+      description: Membership grants are preserved so re-adding the definition restores
+        authorization.
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Tag pair
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.RoleTagPairRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Delete one role tag definition
+      tags:
+      - roles
+    patch:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Old and new tag names
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.RenameRoleTagRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Rename one role tag and migrate its membership grants
+      tags:
+      - roles
+    post:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: roleID
+        required: true
+        type: string
+      - description: CSRF token matching the csrf_token cookie
+        in: header
+        name: X-CSRF-Token
+        required: true
+        type: string
+      - description: Tag pair
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.RoleTagPairRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Add one role tag definition
       tags:
       - roles
   /v1/sessions:

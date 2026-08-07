@@ -16,8 +16,10 @@ const (
 type RoleLevel string
 
 const (
-	RoleMember    RoleLevel = "member"
-	RoleRoleAdmin RoleLevel = "role_admin"
+	// RoleDirectMember grants only the selected role; it is not inherited by subroles.
+	RoleDirectMember RoleLevel = "direct_member"
+	RoleMember       RoleLevel = "member"
+	RoleRoleAdmin    RoleLevel = "role_admin"
 )
 
 type User struct {
@@ -30,6 +32,9 @@ type User struct {
 	Superuser         bool
 	PasswordChangedAt *time.Time
 	LockedUntil       *time.Time
+	BannedAt          *time.Time
+	BannedBy          *uuid.UUID
+	BanReason         string
 	CreatedAt         time.Time
 }
 
@@ -43,6 +48,7 @@ type Role struct {
 	// ParentID is a compatibility view of the first mount. New code must use
 	// ParentIDs because a role can have multiple parents.
 	ParentID  *uuid.UUID
+	Tags      []string
 	CreatedAt time.Time
 }
 
@@ -80,6 +86,7 @@ const (
 	OTPLogin          OTPPurpose = "login"
 	OTPSessionRevoke  OTPPurpose = "session_revoke"
 	OTPPasswordChange OTPPurpose = "password_change"
+	OTPPasswordReset  OTPPurpose = "password_reset"
 	// OTPStepUp2FA is email step-up 2FA over REST. DB enum value remains grpc_2fa for existing deployments.
 	OTPStepUp2FA OTPPurpose = "grpc_2fa"
 	OTPGeneric   OTPPurpose = "generic"

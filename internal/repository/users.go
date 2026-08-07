@@ -73,6 +73,9 @@ func rowToUser(m *userModel) *domain.User {
 		Superuser:         m.Superuser,
 		PasswordChangedAt: m.PasswordChangedAt,
 		LockedUntil:       m.LockedUntil,
+		BannedAt:          m.BannedAt,
+		BannedBy:          m.BannedBy,
+		BanReason:         m.BanReason,
 		CreatedAt:         m.CreatedAt,
 	}
 }
@@ -149,6 +152,56 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]domain.User, error)
 		list = append(list, *rowToUser(&rows[i]))
 	}
 	return list, nil
+}
+
+func (s *Store) SearchUsers(ctx context.Context, query string, after *PageCursor, limit int, countTotal bool) ([]domain.User, *PageCursor, *int64, error) {
+	db := s.db.WithContext(ctx).Model(&userModel{})
+	if q := strings.TrimSpace(query); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		db = db.Where("LOWER(login) LIKE ? OR LOWER(COALESCE(email, '')) LIKE ?", like, like)
+	}
+	var total *int64
+	if countTotal {
+		var n int64
+		if err := db.Count(&n).Error; err != nil {
+			return nil, nil, nil, err
+		}
+		total = &n
+	}
+	if after != nil {
+		db = db.Where("(LOWER(login), id) > (?, ?)", after.Sort, after.ID)
+	}
+	var rows []userModel
+	if err := db.Order("LOWER(login) ASC, id ASC").Limit(limit + 1).Find(&rows).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	var next *PageCursor
+	if len(rows) > limit {
+		last := rows[limit-1]
+		next = &PageCursor{Sort: strings.ToLower(last.Login), ID: last.ID}
+		rows = rows[:limit]
+	}
+	out := make([]domain.User, 0, len(rows))
+	for i := range rows {
+		out = append(out, *rowToUser(&rows[i]))
+	}
+	return out, next, total, nil
+}
+
+func (s *Store) SetUserBan(ctx context.Context, userID uuid.UUID, bannedBy *uuid.UUID, reason string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		values := map[string]any{"banned_at": time.Now(), "banned_by": bannedBy, "ban_reason": strings.TrimSpace(reason)}
+		if bannedBy == nil {
+			values = map[string]any{"banned_at": nil, "banned_by": nil, "ban_reason": ""}
+		}
+		if err := tx.Model(&userModel{}).Where("id = ?", userID).Updates(values).Error; err != nil {
+			return err
+		}
+		if bannedBy != nil {
+			return tx.Model(&refreshSessionModel{}).Where("user_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", time.Now()).Error
+		}
+		return nil
+	})
 }
 
 func ptrTime(t time.Time) *time.Time {

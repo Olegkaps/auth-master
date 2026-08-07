@@ -64,9 +64,9 @@ install: ## Install Go tools, web dependencies, and Playwright
 # -----------------------------------------------------------------------------
 
 up: | .env
-up: ## Start PostgreSQL, Mailpit, and authd through Compose
+up: ## Start the production SPA, authd, PostgreSQL, and Mailpit through Compose
 	$(COMPOSE) up --build -d
-	@echo "authd: http://localhost:8080   swagger: http://localhost:8080/swagger/   mailpit: http://localhost:8025"
+	@echo "app: http://localhost:8080   swagger: http://localhost:8080/swagger/   mailpit: http://localhost:8025"
 
 down: | .env
 down: ## Stop the stack
@@ -96,6 +96,7 @@ web-dev: ## Start the Vite SPA server on port 5173
 
 test-unit: ## Run fast Go tests without a database
 	SKIP_TESTCONTAINERS=1 $(TESTSUM) ./... -count=1
+	cd web && npm run test:unit
 
 # Start PostgreSQL through Compose. Tests create ephemeral databases on it.
 # REQUIRE_COVERAGE_GATE=1 makes an unavailable database fail the coverage gate.

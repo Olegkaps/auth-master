@@ -7,7 +7,7 @@ framework-free TypeScript SPA.
 
 ## Requirements
 
-- Go 1.24 or newer
+- Go 1.25 or newer
 - Podman or Docker with Compose
 - Node.js 20 or newer
 - GNU Make
@@ -20,10 +20,11 @@ make install
 make up
 ```
 
-The backend and SPA are available at `http://localhost:8080`, Swagger UI at
+The production SPA and API gateway are available at `http://localhost:8080`, Swagger UI at
 `http://localhost:8080/swagger/`, and Mailpit at `http://localhost:8025`.
 
-For local development, run these commands in separate terminals:
+For local development with Vite hot reload, run these commands in separate
+terminals and open `http://localhost:5173`:
 
 ```bash
 make dev
@@ -32,6 +33,23 @@ make web-dev
 
 Compose is selected automatically (Podman first, then Docker). Override it when
 needed: `make up COMPOSE='docker compose'`.
+
+`make down` stops the stack but preserves the named PostgreSQL volume. Remove
+that volume explicitly only when you intentionally want to erase local data.
+
+### Role-name migration preflight
+
+Role names are authorization keys and must be nonblank and unique after
+case-folding and trimming surrounding whitespace. Startup takes an exclusive
+lock on `roles`, checks the complete legacy table, and refuses to migrate when
+it finds blank names or normalized collisions. The error lists every affected
+role UUID and original value. It never silently merges, suffixes, or otherwise
+changes ambiguous authorization keys.
+
+Repair the listed `roles.name` values so they are nonblank and
+case-insensitively unique, then restart or rerun the migration. When the
+preflight is clean, nonambiguous surrounding whitespace is trimmed
+deterministically and database constraints prevent regressions.
 
 The explicit copy is optional: every Compose-backed Make target creates the
 ignored `.env` from `.env.example` when it is missing and never overwrites an
@@ -43,6 +61,10 @@ existing developer file.
   character. Password history and Levenshtein similarity checks prevent reuse.
 - Login is password plus a single-use email OTP challenge. An incorrect OTP
   consumes the challenge.
+- Password-reset OTPs allow at most `OTP_MAX_ATTEMPTS` wrong codes (five by
+  default), and reset issuance is throttled by `OTP_RESET_MIN_INTERVAL` (one
+  minute by default). The public start endpoint gives the same response for
+  unknown, throttled, and known accounts to avoid account enumeration.
 - Password changes require the current password and a separate email OTP.
 - Magic links are single-use, time-limited passwordless login tokens stored as
   hashes.
@@ -68,6 +90,13 @@ operations ──┘
 A member of either parent has `release-manager`; an administrator of either
 parent can manage it. Authority never flows upward or sideways.
 
+Membership levels are deliberately distinct:
+
+- `direct_member` grants only the selected role and never inherits.
+- `member` grants the selected role and every descendant.
+- `role_admin` grants inherited membership and management authority over the
+  selected role and every descendant.
+
 Mount edges live in `role_mounts(child_role_id, parent_role_id)`. Recursive
 queries evaluate inheritance live, stop at depth 64, and avoid revisiting a role
 within a path. A mount that would create a cycle is rejected. During migration,
@@ -85,7 +114,51 @@ Relevant endpoints:
 
 Deleting a role removes its memberships and requests. Its direct children are
 mounted under each of its direct parents before the deleted role's edges are
-removed, preserving reachability where possible.
+removed, preserving reachability where possible. Tag definitions for the deleted
+role are removed as part of the same transaction.
+
+Hierarchy writes are serialized in PostgreSQL and cycle-checked in the same
+transaction as the mount. Creating a role with multiple parents is atomic: an
+invalid parent leaves no partial role behind. Adding or removing a mount requires
+the caller to manage both endpoint roles; superusers bypass that check.
+
+## Role tags and grants
+
+Role tags are normalized capability names. A definition in
+`role_tags(role_id, tag)` only makes a tag available; it does not grant the
+capability. A grant is a separate `user_role_tags(user_role_id, tag)` pair and
+must be a subset of the role's definitions.
+
+- Add or delete definitions with the single-pair `POST`/`DELETE
+  /v1/roles/{roleID}/tags` operations.
+- Add or delete membership grants with the single-pair `POST`/`DELETE
+  /v1/roles/{roleID}/members/{userID}/tags` operations.
+- Rename a definition with `PATCH /v1/roles/{roleID}/tags`; matching membership
+  grants migrate atomically.
+- Deleting a definition disables authorization but preserves matching membership
+  grants. Re-adding the same definition restores the preserved grant.
+- A granted tag inherits to descendants only when its membership level inherits;
+  `direct_member` tags stay local.
+
+## Pagination and authorization APIs
+
+`GET /v1/roles` and superuser-only `GET /v1/admin/users` use keyset pagination
+ordered by normalized name and UUID. `page_size` is at most 100. The first page
+returns `total` and an opaque `next_cursor`; cursor pages return `total: null` and
+never use an offset or repeat the count query. Searches are case-insensitive.
+
+`GET /v1/roles/{roleID}/subgroups?recursive=false` returns direct children;
+`recursive=true` returns all descendants once even through multiple paths.
+
+For cross-service authorization, send a human access token in the JSON body to
+`POST /v1/auth/has-role` or `POST /v1/auth/has-role-with-tag`. The subject is
+always derived from the verified token; callers cannot supply a user ID. Service,
+invalid, stale, and banned-user tokens are rejected.
+
+User bans are superuser-only, cannot target the actor or another superuser, and
+revoke every refresh session. Bans are checked on each authenticated request and
+inside service-layer token, magic-link, role/tag, and management checks. Unban is
+also routed through the service authorization boundary.
 
 ## SPA
 
@@ -93,14 +166,22 @@ removed, preserving reachability where possible.
 shows login and email OTP, password reset, magic-link login, multi-account
 switching, session management, invites, signing-key rotation, and RBAC.
 
-The Roles page lists every parent mount. Superusers can mount a role under
-additional parents or remove individual mounts. Role managers can manage
-members and pending membership requests.
+The Roles page lists every parent mount. Superusers can always add or remove
+mounts. A role manager may do the same only when they manage both the child and
+parent roles. Role managers can also manage members and pending membership
+requests for roles under their authority.
 
 The client keeps access tokens in memory and restores sessions using refresh
 tokens. The demo's multi-account support stores per-account refresh tokens in
 local storage; a production browser application should prefer a server-managed
 HttpOnly design to reduce XSS exposure.
+
+Saved accounts are removed only when refresh returns `401`, which definitively
+means the refresh session is invalid. Network failures, malformed responses,
+`408`, `429`, other unexpected statuses, and server `5xx` responses preserve
+the saved account. A failed switch restores the previous account and reports a
+retryable error; a transient failure during boot keeps the cached active
+account so a later request or reload can retry.
 
 ## Tests and quality gates
 
@@ -121,6 +202,10 @@ Run every check through `make`:
 
 Every feature must include automated tests, including E2E coverage for visible
 behavior. See [AGENTS.md](AGENTS.md) and [web/e2e/README.md](web/e2e/README.md).
+PostgreSQL transaction semantics such as row-lock ordering, trigger rollback,
+and deterministic history trimming are integration-only concerns and are
+verified by `make test-integration`; policy preparation and error mapping stay
+in the fast unit layer.
 
 ## OpenAPI
 

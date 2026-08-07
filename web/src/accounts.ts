@@ -9,7 +9,7 @@
 // HttpOnly cookie (an XSS bug could read them). A production app would prefer
 // server-side multi-session (one opaque cookie indexing several sessions). This
 // is a demo, so we keep it simple and document the choice.
-import { type MeUser, clearSession, onSessionChange, refresh, session, setTokens, setUser } from './api'
+import { ApiError, type MeUser, clearSession, onSessionChange, refresh, session, setTokens, setUser } from './api'
 import { loadIdentity } from './store'
 
 export interface Account {
@@ -31,6 +31,8 @@ export interface Tokens {
   expires_at: string
   refresh_token: string
 }
+
+export class RetryableAccountError extends Error {}
 
 const KEY = 'accounts_v1'
 let list: Account[] = restore()
@@ -92,6 +94,22 @@ function applyTokens(t: { accessToken: string; csrfToken: string; refreshToken: 
   setTokens(t.accessToken, t.csrfToken, t.expiresAt)
 }
 
+function applyCachedAccount(account: Account): void {
+  suspendSync(true)
+  try {
+    activeId = account.id
+    applyTokens(account, account.deviceId)
+    setUser({ id: account.id, login: account.login, email: account.email, kind: account.kind, superuser: account.superuser } as MeUser)
+  } finally {
+    suspendSync(false)
+  }
+  emit()
+}
+
+function isDefinitiveInvalid(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401
+}
+
 /**
  * Apply freshly-issued tokens, load identity, and record the active account.
  * Sync is suspended during the transition so a previously-added account isn't
@@ -135,18 +153,32 @@ export function recordActiveLogin(deviceId: string): void {
 export async function switchTo(id: string): Promise<void> {
   const a = list.find((x) => x.id === id)
   if (!a) return
-  suspendSync(true)
+  const previousId = activeId
+	applyCachedAccount(a)
   try {
-    activeId = id
-    applyTokens(a, a.deviceId)
-    setUser({ id: a.id, login: a.login, email: a.email, kind: a.kind, superuser: a.superuser } as MeUser)
-  } finally {
-    suspendSync(false)
+		const outcome = await refresh()
+		if (outcome.kind === 'invalid') throw new ApiError(401, 'invalid refresh session')
+		if (outcome.kind === 'transient') throw new RetryableAccountError(`Session for ${a.login} is temporarily unavailable; retry the switch.`)
+    await loadIdentity()
+    emit()
+	} catch (error) {
+		if (!isDefinitiveInvalid(error)) {
+			const fallback = list.find((account) => account.id === previousId) ?? a
+			applyCachedAccount(fallback)
+			if (error instanceof RetryableAccountError) throw error
+			throw new RetryableAccountError(`Session for ${a.login} is temporarily unavailable; retry the switch.`)
+		}
+    // A saved account can outlive its server session (revocation, database
+    // reset, or expiry). Remove the dead entry and restore the prior account
+    // instead of leaving an unusable duplicate in the account picker.
+    list = list.filter((account) => account.id !== id)
+    activeId = ''
+    clearSession()
+    emit()
+    const fallback = list.find((account) => account.id === previousId) ?? list[0]
+    if (fallback) await switchTo(fallback.id)
+    throw new Error(`Session for ${a.login} has expired`)
   }
-  emit()
-  // loadIdentity transparently refreshes this account's token if it's stale
-  // (each account has its own refresh token), so switching always works.
-  await loadIdentity().catch(() => {})
 }
 
 /** Sign out a single account (revoking its server session); switch to another if any remain. */
@@ -181,10 +213,22 @@ export async function signOutAll(apiLogout: (token: string) => Promise<unknown>)
 export async function bootRestore(): Promise<void> {
   const active = list.find((a) => a.id === activeId) ?? list[0]
   if (!active) return
-  activeId = active.id
-  applyTokens(active, active.deviceId)
-  setUser({ id: active.id, login: active.login, email: active.email, kind: active.kind, superuser: active.superuser } as MeUser)
-  await refresh() // rotate to a fresh access token
-  await loadIdentity().catch(() => {})
-  emit()
+	applyCachedAccount(active)
+  try {
+		const outcome = await refresh()
+		if (outcome.kind === 'invalid') throw new ApiError(401, 'invalid refresh session')
+		if (outcome.kind === 'transient') return
+    await loadIdentity()
+    emit()
+	} catch (error) {
+		if (!isDefinitiveInvalid(error)) {
+			applyCachedAccount(active)
+			return
+		}
+    list = list.filter((account) => account.id !== active.id)
+    activeId = ''
+    clearSession()
+    emit()
+    if (list[0]) await switchTo(list[0].id).catch(() => {})
+  }
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/crypto"
+	"github.com/olegkapshai/auth-master/internal/repository"
 )
 
 // checkPasswordComplexity enforces length plus at least one lowercase letter,
@@ -62,6 +63,10 @@ func (a *Auth) validateNewPassword(ctx context.Context, userID uuid.UUID, newPas
 	if err != nil {
 		return err
 	}
+	return validatePasswordHistory(newPassword, entries, a.cfg.PasswordHistoryEncryptionKey)
+}
+
+func validatePasswordHistory(newPassword string, entries []repository.PasswordHistoryEntry, encryptionKey string) error {
 	for _, e := range entries {
 		ok, err := crypto.VerifyPassword(newPassword, e.PasswordHash)
 		if err != nil {
@@ -71,7 +76,7 @@ func (a *Auth) validateNewPassword(ctx context.Context, userID uuid.UUID, newPas
 			return fmt.Errorf("%w: password reused", ErrPasswordPolicy)
 		}
 	}
-	plainKey, err := crypto.DecodeKey32(a.cfg.PasswordHistoryEncryptionKey)
+	plainKey, err := crypto.DecodeKey32(encryptionKey)
 	if err != nil {
 		return err
 	}
@@ -83,6 +88,41 @@ func (a *Auth) validateNewPassword(ctx context.Context, userID uuid.UUID, newPas
 		if crypto.Levenshtein(newPassword, string(prev)) <= 2 {
 			return fmt.Errorf("%w: too similar to previous password", ErrPasswordPolicy)
 		}
+	}
+	return nil
+}
+
+// preparePasswordResetMutation is pure with respect to persistence. The
+// repository supplies the locked transaction's history snapshot, and either
+// receives a complete mutation or rolls the transaction back unchanged.
+func preparePasswordResetMutation(newPassword string, entries []repository.PasswordHistoryEntry, encryptionKey string) (repository.PasswordResetMutation, error) {
+	if err := checkPasswordComplexity(newPassword); err != nil {
+		return repository.PasswordResetMutation{}, err
+	}
+	if err := validatePasswordHistory(newPassword, entries, encryptionKey); err != nil {
+		return repository.PasswordResetMutation{}, err
+	}
+	hash, err := crypto.HashPassword(newPassword)
+	if err != nil {
+		return repository.PasswordResetMutation{}, err
+	}
+	plainKey, err := crypto.DecodeKey32(encryptionKey)
+	if err != nil {
+		return repository.PasswordResetMutation{}, err
+	}
+	nonce, cipher, err := crypto.EncryptAESGCM(plainKey, []byte(newPassword), nil)
+	if err != nil {
+		return repository.PasswordResetMutation{}, err
+	}
+	return repository.PasswordResetMutation{PasswordHash: hash, Ciphertext: cipher, Nonce: nonce}, nil
+}
+
+func passwordResetCompletionError(completed bool, err error) error {
+	if err != nil {
+		return err
+	}
+	if !completed {
+		return ErrOTPInvalid
 	}
 	return nil
 }

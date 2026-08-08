@@ -83,7 +83,7 @@ func (s *Server) handleRegistrationInvitePreview(w http.ResponseWriter, r *http.
 
 type createInviteBody struct {
 	Email      string `json:"email"`
-	TTLSeconds int    `json:"ttl_seconds"`
+	TTLSeconds int64  `json:"ttl_seconds"`
 	Superuser  bool   `json:"superuser"`
 }
 
@@ -107,7 +107,11 @@ func (s *Server) handleCreateRegistrationInvite(w http.ResponseWriter, r *http.R
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	ttl := time.Duration(b.TTLSeconds) * time.Second
+	ttl, err := service.DurationFromSeconds(b.TTLSeconds)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	var locked *string
 	if e := strings.TrimSpace(b.Email); e != "" {
 		locked = &e
@@ -441,8 +445,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusUnauthorized, "no user")
 		return
 	}
-	u, err := s.repo.GetUserByID(r.Context(), uid)
-	if err != nil || u == nil {
+	u, err := s.auth.CurrentUser(r.Context(), uid)
+	if err != nil {
 		s.writeErr(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -607,7 +611,7 @@ func (s *Server) handlePasswordResetComplete(w http.ResponseWriter, r *http.Requ
 // @Router /v1/sessions [get]
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	list, err := s.repo.ListRefreshSessions(r.Context(), uid)
+	list, err := s.auth.Sessions(r.Context(), uid)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -736,7 +740,7 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}
-	list, next, total, err := s.repo.SearchRoles(r.Context(), r.URL.Query().Get("q"), cursor, pageSize, cursor == nil)
+	list, next, total, err := s.auth.RolesPage(r.Context(), r.URL.Query().Get("q"), cursor, pageSize)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -772,11 +776,6 @@ func normalizeRoleName(name string) (string, error) {
 // @Router /v1/roles [post]
 func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	ok, err := s.auth.IsSuperuser(r.Context(), uid)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
 	var b createRoleBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
@@ -804,8 +803,12 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		}
 		parentIDs = append(parentIDs, pid)
 	}
-	id, err := s.repo.CreateRoleWithParents(r.Context(), name, strings.TrimSpace(b.Description), parentIDs)
+	id, err := s.auth.CreateRole(r.Context(), uid, name, b.Description, parentIDs)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "superuser only")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -824,17 +827,16 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 // @Router /v1/roles/{roleID} [delete]
 func (s *Server) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	su, _ := s.auth.IsSuperuser(r.Context(), uid)
-	if !su {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
 	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
 		return
 	}
-	if err := s.repo.DeleteRole(r.Context(), rid); err != nil {
+	if err := s.auth.DeleteRole(r.Context(), uid, rid); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "superuser only")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -861,11 +863,6 @@ type setParentBody struct {
 // @Router /v1/roles/{roleID}/parent [patch]
 func (s *Server) handleSetRoleParent(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	su, _ := s.auth.IsSuperuser(r.Context(), uid)
-	if !su {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
 	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
@@ -885,7 +882,11 @@ func (s *Server) handleSetRoleParent(w http.ResponseWriter, r *http.Request) {
 		}
 		parent = &pid
 	}
-	if err := s.repo.SetRoleParent(r.Context(), rid, parent); err != nil {
+	if err := s.auth.SetRoleParent(r.Context(), uid, rid, parent); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "superuser only")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -921,12 +922,11 @@ func (s *Server) handleMountRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad parent_id")
 		return
 	}
-	allowed, authErr := s.auth.CanMountRole(r.Context(), uid, rid, pid)
-	if authErr != nil || !allowed {
-		s.writeErr(w, http.StatusForbidden, "manager of both roles required")
-		return
-	}
-	if err := s.repo.MountRole(r.Context(), rid, pid); err != nil {
+	if err := s.auth.Mount(r.Context(), uid, rid, pid); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "manager of both roles required")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -955,12 +955,11 @@ func (s *Server) handleUnmountRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad parent id")
 		return
 	}
-	allowed, authErr := s.auth.CanMountRole(r.Context(), uid, rid, pid)
-	if authErr != nil || !allowed {
-		s.writeErr(w, http.StatusForbidden, "manager of both roles required")
-		return
-	}
-	if err := s.repo.UnmountRole(r.Context(), rid, pid); err != nil {
+	if err := s.auth.Unmount(r.Context(), uid, rid, pid); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "manager of both roles required")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -982,7 +981,7 @@ func (s *Server) handleListSubgroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recursive := r.URL.Query().Get("recursive") == "true"
-	roles, err := s.repo.ListSubroles(r.Context(), rid, recursive)
+	roles, err := s.auth.Subgroups(r.Context(), rid, recursive)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1070,11 +1069,6 @@ func (s *Server) handleRenameRoleTag(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
 		return
 	}
-	allowed, err := s.auth.CanAssignRole(r.Context(), actor, rid)
-	if err != nil || !allowed {
-		s.writeErr(w, http.StatusForbidden, "role manager required")
-		return
-	}
 	var body struct {
 		OldTag string `json:"old_tag"`
 		NewTag string `json:"new_tag"`
@@ -1088,7 +1082,11 @@ func (s *Server) handleRenameRoleTag(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.repo.RenameRoleTag(r.Context(), rid, oldTag, newTag); err != nil {
+	if err := s.auth.RenameRoleTag(r.Context(), actor, rid, oldTag, newTag); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "role manager required")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1100,11 +1098,6 @@ func (s *Server) handleRoleTagPair(w http.ResponseWriter, r *http.Request, add b
 	rid, err := uuid.Parse(chi.URLParam(r, "roleID"))
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
-		return
-	}
-	allowed, err := s.auth.CanAssignRole(r.Context(), actor, rid)
-	if err != nil || !allowed {
-		s.writeErr(w, http.StatusForbidden, "role manager required")
 		return
 	}
 	var body struct {
@@ -1119,12 +1112,12 @@ func (s *Server) handleRoleTagPair(w http.ResponseWriter, r *http.Request, add b
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if add {
-		err = s.repo.AddRoleTag(r.Context(), rid, tags[0])
-	} else {
-		err = s.repo.DeleteRoleTag(r.Context(), rid, tags[0])
-	}
+	err = s.auth.ChangeRoleTag(r.Context(), actor, rid, tags[0], add)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "role manager required")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1150,13 +1143,12 @@ func (s *Server) handleListRoleMembers(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
 		return
 	}
-	ok, err := s.auth.CanAssignRole(r.Context(), uid, rid)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	members, err := s.repo.ListRoleMembers(r.Context(), rid, time.Now())
+	members, err := s.auth.RoleMembers(r.Context(), uid, rid)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1197,18 +1189,16 @@ func (s *Server) handlePatchRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
 		return
 	}
-	su, _ := s.auth.IsSuperuser(r.Context(), uid)
-	ra, _ := s.auth.IsRoleAdmin(r.Context(), uid, rid)
-	if !su && !ra {
-		s.writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	var b patchRoleBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := s.repo.UpdateRoleDescription(r.Context(), rid, b.Description); err != nil {
+	if err := s.auth.UpdateRoleDescription(r.Context(), uid, rid, b.Description); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1233,19 +1223,12 @@ func (s *Server) handleUserRoles(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad user id")
 		return
 	}
-	if actor != target {
-		su, err := s.auth.IsSuperuser(r.Context(), actor)
-		if err != nil {
-			s.writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if !su {
+	urs, err := s.auth.UserRoles(r.Context(), actor, target)
+	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
 			s.writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}
-	}
-	urs, err := s.repo.ListUserRoles(r.Context(), target, time.Now())
-	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1278,11 +1261,6 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
 		return
 	}
-	ok, err := s.auth.CanAssignRole(r.Context(), actor, rid)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	var b assignBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
@@ -1298,13 +1276,16 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "invalid level")
 		return
 	}
-	gb := actor
 	tags, err := normalizeTags(b.TagGrants)
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.repo.AssignUserRoleWithTagGrants(r.Context(), target, rid, lvl, &gb, time.Now(), b.ValidUntil, tags); err != nil {
+	if err := s.auth.AssignRole(r.Context(), actor, target, rid, lvl, b.ValidUntil, tags); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1355,11 +1336,6 @@ func (s *Server) handleUserRoleTagPair(w http.ResponseWriter, r *http.Request, a
 		s.writeErr(w, http.StatusBadRequest, "bad user id")
 		return
 	}
-	allowed, err := s.auth.CanAssignRole(r.Context(), actor, rid)
-	if err != nil || !allowed {
-		s.writeErr(w, http.StatusForbidden, "role manager required")
-		return
-	}
 	var body struct {
 		Tag string `json:"tag"`
 	}
@@ -1372,25 +1348,20 @@ func (s *Server) handleUserRoleTagPair(w http.ResponseWriter, r *http.Request, a
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if add {
-		role, loadErr := s.repo.GetRoleByID(r.Context(), rid)
-		if loadErr != nil || role == nil {
+	err = s.auth.ChangeMembershipTag(r.Context(), actor, target, rid, tags[0], add)
+	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "role manager required")
+			return
+		}
+		if errors.Is(err, service.ErrNotFound) {
 			s.writeErr(w, http.StatusBadRequest, "role not found")
 			return
 		}
-		configured := false
-		for _, tag := range role.Tags {
-			configured = configured || tag == tags[0]
-		}
-		if !configured {
-			s.writeErr(w, http.StatusBadRequest, "tag is not configured for role")
+		if errors.Is(err, service.ErrTagNotConfigured) {
+			s.writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		err = s.repo.AddUserRoleTag(r.Context(), target, rid, tags[0])
-	} else {
-		err = s.repo.DeleteUserRoleTag(r.Context(), target, rid, tags[0])
-	}
-	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1420,12 +1391,11 @@ func (s *Server) handleRemoveRole(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "bad user id")
 		return
 	}
-	ok, err := s.auth.CanAssignRole(r.Context(), actor, rid)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	if err := s.repo.RemoveUserRole(r.Context(), target, rid); err != nil {
+	if err := s.auth.RemoveRole(r.Context(), actor, target, rid); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1465,22 +1435,15 @@ func (s *Server) handleRoleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		target = tid
 	}
-	if target != actor {
-		canManage, authErr := s.auth.CanAssignRole(r.Context(), actor, rid)
-		if authErr != nil {
-			s.writeErr(w, http.StatusForbidden, "forbidden")
-			return
-		}
-		if !canManage {
-			s.writeErr(w, http.StatusForbidden, "only a role manager may request membership for another user")
-			return
-		}
-	}
 	// A role manager (superuser or admin of this role / an ancestor) doesn't need
 	// approval — the membership is granted immediately. Everyone else creates a
 	// pending request for a manager to decide.
-	granted, id, err := s.auth.RequestRoleMembership(r.Context(), actor, target, rid)
+	granted, id, err := s.auth.RequestRole(r.Context(), actor, target, rid)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "only a role manager may request membership for another user")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1509,14 +1472,12 @@ func (s *Server) handleListRoleRequests(w http.ResponseWriter, r *http.Request) 
 		s.writeErr(w, http.StatusBadRequest, "bad role id")
 		return
 	}
-	su, _ := s.auth.IsSuperuser(r.Context(), uid)
-	ra, _ := s.auth.IsRoleAdmin(r.Context(), uid, rid)
-	if !su && !ra {
-		s.writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	list, err := s.repo.ListPendingRoleRequests(r.Context(), rid)
+	list, err := s.auth.PendingRoleRequests(r.Context(), uid, rid)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1548,22 +1509,20 @@ func (s *Server) handleDecideRoleRequest(w http.ResponseWriter, r *http.Request)
 		s.writeErr(w, http.StatusBadRequest, "bad request id")
 		return
 	}
-	req, err := s.repo.GetRoleRequest(r.Context(), reqID)
-	if err != nil || req == nil {
-		s.writeErr(w, http.StatusNotFound, "not found")
-		return
-	}
-	ok, err := s.auth.CanAssignRole(r.Context(), actor, req.RoleID)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	var b decideBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := s.repo.DecideRoleRequestWithMembership(r.Context(), reqID, b.Approve, actor, time.Now()); err != nil {
+	if err := s.auth.DecideRoleRequest(r.Context(), actor, reqID, b.Approve); err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			s.writeErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

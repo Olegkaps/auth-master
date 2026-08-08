@@ -35,6 +35,9 @@ services:
       REGISTRATION_INVITE_BASE_URL: ${REGISTRATION_INVITE_BASE_URL:-http://localhost:8080}
     expose:
       - "8080"
+      - "9090"
+    ports:
+      - "${GRPC_PORT:-9090}:9090"
     depends_on:
       postgres:
         condition: service_healthy

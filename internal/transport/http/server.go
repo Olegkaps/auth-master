@@ -46,7 +46,7 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 	r.Use(cors.Handler(co))
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	r.Handle("/metrics", PrometheusHandler())
+	r.Get("/metrics", PrometheusHandler().ServeHTTP)
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	r.Route("/v1", func(r chi.Router) {

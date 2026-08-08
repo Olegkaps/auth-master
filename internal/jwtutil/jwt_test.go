@@ -12,7 +12,7 @@ func TestSignParseAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, err := SignAccess(key, "kid1", "user-uuid", "alice", TypeAccess, time.Minute)
+	tok, err := SignAccess(key, "kid1", "user-uuid", "alice", TypeAccess, 0, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestSignParseAccess(t *testing.T) {
 
 func TestSignWrongTyp(t *testing.T) {
 	key := make([]byte, 32)
-	_, err := SignAccess(key, "k", "u", "l", "bogus", time.Minute)
+	_, err := SignAccess(key, "k", "u", "l", "bogus", 0, time.Minute)
 	if err == nil {
 		t.Fatal()
 	}

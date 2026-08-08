@@ -72,9 +72,10 @@ func (s *Server) handleStepUp2FAStart(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
 	var b stepUp2FAStartBody
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	ttl := time.Duration(b.TTLSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = 5 * time.Minute
+	ttl, err := service.DurationFromSeconds(b.TTLSeconds)
+	if err != nil {
+		s.writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	corr, err := s.auth.BeginStepUp2FA(r.Context(), uid, ttl)
 	if err != nil {
@@ -238,12 +239,11 @@ func (s *Server) handleVerifyAccessTokenOnly(w http.ResponseWriter, r *http.Requ
 // @Router /v1/admin/signing-keys/rotate [post]
 func (s *Server) handleRotateSigningKey(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	ok, err := s.auth.IsSuperuser(r.Context(), uid)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
-	if err := s.auth.RotateSigningKey(r.Context()); err != nil {
+	if err := s.auth.RotateSigningKeyForActor(r.Context(), uid); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "superuser only")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -264,19 +264,18 @@ func (s *Server) handleRotateSigningKey(w http.ResponseWriter, r *http.Request) 
 // @Router /v1/admin/users [get]
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	ok, err := s.auth.IsSuperuser(r.Context(), uid)
-	if err != nil || !ok {
-		s.writeErr(w, http.StatusForbidden, "superuser only")
-		return
-	}
 	pageSize := pageSize(r)
 	cursor, err := decodeCursor(r.URL.Query().Get("cursor"))
 	if err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}
-	list, next, total, err := s.repo.SearchUsers(r.Context(), r.URL.Query().Get("q"), cursor, pageSize, cursor == nil)
+	list, next, total, err := s.auth.UsersPage(r.Context(), uid, r.URL.Query().Get("q"), cursor, pageSize)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			s.writeErr(w, http.StatusForbidden, "superuser only")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -511,7 +510,7 @@ func (s *Server) handleUnbanUser(w http.ResponseWriter, r *http.Request) {
 // @Router /v1/me/role-access [get]
 func (s *Server) handleRoleAccess(w http.ResponseWriter, r *http.Request) {
 	uid, _ := UserID(r.Context())
-	access, err := s.repo.ListEffectiveRoleAccess(r.Context(), uid, time.Now())
+	access, err := s.auth.EffectiveRoleAccess(r.Context(), uid)
 	if err != nil {
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return

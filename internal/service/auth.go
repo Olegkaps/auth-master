@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -210,32 +211,33 @@ func (a *Auth) issueTokenPair(ctx context.Context, u *domain.User, deviceID, dev
 	if err := a.ensureSigningBootstrap(ctx); err != nil {
 		return nil, nil, err
 	}
-	for {
-		n, err := a.repo.CountActiveRefreshSessions(ctx, u.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if int(n) < a.cfg.MaxSessionsPerUser {
-			break
-		}
-		if err := a.repo.DeleteOldestRefreshSession(ctx, u.ID); err != nil {
-			return nil, nil, err
-		}
-	}
 	rawRefresh, err := randomRefreshToken()
 	if err != nil {
 		return nil, nil, err
 	}
 	th := hashRefreshToken(rawRefresh)
 	exp := time.Now().Add(a.cfg.RefreshTokenTTL)
-	if _, err := a.repo.UpsertRefreshSession(ctx, u.ID, deviceID, deviceLabel, th, exp); err != nil {
+	lockedUser, _, err := a.repo.UpsertRefreshSessionForActiveVersion(
+		ctx, u.ID, u.TokenVersion, deviceID, deviceLabel, th, exp, a.cfg.MaxSessionsPerUser,
+	)
+	if errors.Is(err, repository.ErrUserInactive) {
+		return nil, nil, ErrBanned
+	}
+	if errors.Is(err, repository.ErrTokenVersionMismatch) {
+		return nil, nil, ErrInvalidCredentials
+	}
+	if errors.Is(err, repository.ErrInvalidMaxSessions) {
+		return nil, nil, ErrInvalidArgument
+	}
+	if err != nil {
 		return nil, nil, err
 	}
+	u = lockedUser
 	kid, sec, err := a.currentSigningSecret(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	access, err := jwtutil.SignAccess(sec, kid, u.ID.String(), u.Login, jwtutil.TypeAccess, a.cfg.AccessTokenTTL)
+	access, err := jwtutil.SignAccess(sec, kid, u.ID.String(), u.Login, jwtutil.TypeAccess, u.TokenVersion, a.cfg.AccessTokenTTL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -274,14 +276,22 @@ func (a *Auth) Refresh(ctx context.Context, refreshToken, deviceID, deviceLabel 
 	}
 	newHash := hashRefreshToken(newRaw)
 	exp := time.Now().Add(a.cfg.RefreshTokenTTL)
-	if err := a.repo.ReplaceRefreshToken(ctx, row.ID, th, newHash, exp); err != nil {
+	lockedUser, err := a.repo.RotateRefreshSessionForActiveVersion(ctx, row.UserID, row.ID, u.TokenVersion, th, newHash, exp)
+	if errors.Is(err, repository.ErrUserInactive) {
+		return nil, ErrBanned
+	}
+	if errors.Is(err, repository.ErrTokenVersionMismatch) || errors.Is(err, repository.ErrRefreshInvalid) {
 		return nil, ErrInvalidCredentials
 	}
+	if err != nil {
+		return nil, err
+	}
+	u = lockedUser
 	kid, sec, err := a.currentSigningSecret(ctx)
 	if err != nil {
 		return nil, err
 	}
-	access, err := jwtutil.SignAccess(sec, kid, u.ID.String(), u.Login, jwtutil.TypeAccess, a.cfg.AccessTokenTTL)
+	access, err := jwtutil.SignAccess(sec, kid, u.ID.String(), u.Login, jwtutil.TypeAccess, u.TokenVersion, a.cfg.AccessTokenTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +327,7 @@ func (a *Auth) VerifyAccessToken(ctx context.Context, token string, wantTyp stri
 	if v.Typ != wantTyp {
 		return nil, ErrWrongTokenType
 	}
-	if err := a.rejectBannedTokenSubject(ctx, v.Subject); err != nil {
+	if err := a.rejectInactiveTokenSubject(ctx, v.Subject, v.TokenVersion); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -347,13 +357,13 @@ func (a *Auth) VerifyAccessOrServiceToken(ctx context.Context, token string) (*j
 	if v.Typ != jwtutil.TypeAccess && v.Typ != jwtutil.TypeService {
 		return nil, ErrWrongTokenType
 	}
-	if err := a.rejectBannedTokenSubject(ctx, v.Subject); err != nil {
+	if err := a.rejectInactiveTokenSubject(ctx, v.Subject, v.TokenVersion); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
 
-func (a *Auth) rejectBannedTokenSubject(ctx context.Context, subject string) error {
+func (a *Auth) rejectInactiveTokenSubject(ctx context.Context, subject string, tokenVersion int64) error {
 	userID, err := uuid.Parse(subject)
 	if err != nil {
 		return ErrInvalidCredentials
@@ -362,7 +372,13 @@ func (a *Auth) rejectBannedTokenSubject(ctx context.Context, subject string) err
 	if err != nil {
 		return err
 	}
-	return requireActiveUser(u)
+	if err := requireActiveUser(u); err != nil {
+		return err
+	}
+	if u.TokenVersion != tokenVersion {
+		return ErrInvalidCredentials
+	}
+	return nil
 }
 
 // StartPasswordChange2FA emails a one-time code that must be supplied to
@@ -505,7 +521,7 @@ func (a *Auth) IssueServiceToken(ctx context.Context, login, secret string) (str
 		return "", time.Time{}, err
 	}
 	exp := time.Now().Add(a.cfg.AccessTokenTTL)
-	tok, err := jwtutil.SignAccess(sec, kid, u.ID.String(), u.Login, jwtutil.TypeService, a.cfg.AccessTokenTTL)
+	tok, err := jwtutil.SignAccess(sec, kid, u.ID.String(), u.Login, jwtutil.TypeService, u.TokenVersion, a.cfg.AccessTokenTTL)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -563,12 +579,17 @@ func (a *Auth) RevokeOwnSession(ctx context.Context, userID, sessionID uuid.UUID
 
 // BeginStepUp2FA creates a correlation id, DB session, and emails an OTP code.
 func (a *Auth) BeginStepUp2FA(ctx context.Context, userID uuid.UUID, ttl time.Duration) (correlationID string, err error) {
+	ttl, err = normalizeStepUpTTL(ttl)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
 	u, err := a.repo.GetUserByID(ctx, userID)
 	if err != nil || u == nil || u.Email == nil {
 		return "", ErrNotFound
 	}
 	correlationID = uuid.New().String()
-	exp := time.Now().Add(ttl)
+	exp := now.Add(ttl)
 	if err := a.repo.CreateStepUp2FASession(ctx, correlationID, userID, exp); err != nil {
 		return "", err
 	}
@@ -577,9 +598,9 @@ func (a *Auth) BeginStepUp2FA(ctx context.Context, userID uuid.UUID, ttl time.Du
 		return "", err
 	}
 	chash := hashOTP(a.otpPepper, code)
-	otpExp := time.Now().Add(a.cfg.OTPCodeTTL)
+	otpExp := now.Add(a.cfg.OTPCodeTTL)
 	if ttl < a.cfg.OTPCodeTTL {
-		otpExp = time.Now().Add(ttl)
+		otpExp = exp
 	}
 	if _, err := a.repo.CreateEmailOTP(ctx, userID, domain.OTPStepUp2FA, chash, otpExp, &correlationID); err != nil {
 		return "", err

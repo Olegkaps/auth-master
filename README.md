@@ -1,6 +1,6 @@
 # auth-master
 
-A demonstration authentication and authorization service with a Go REST API,
+A demonstration authentication and authorization service with Go REST and gRPC APIs,
 PostgreSQL, JWT access/refresh sessions, email OTP, passwordless magic links,
 registration invites, multi-parent RBAC, Swagger, Prometheus metrics, and a
 framework-free TypeScript SPA.
@@ -8,6 +8,7 @@ framework-free TypeScript SPA.
 ## Requirements
 
 - Go 1.25 or newer
+- Protocol Buffers compiler (`protoc`) for `make proto` and `make proto-check`
 - Podman or Docker with Compose
 - Node.js 20 or newer
 - GNU Make
@@ -21,7 +22,111 @@ make up
 ```
 
 The production SPA and API gateway are available at `http://localhost:8080`, Swagger UI at
-`http://localhost:8080/swagger/`, and Mailpit at `http://localhost:8025`.
+`http://localhost:8080/swagger/`, gRPC at `localhost:9090`, and Mailpit at
+`http://localhost:8025`.
+
+## gRPC for backend consumers
+
+The checked-in `api/auth/v1/auth.proto` contract exposes all 54 business
+operations as five unary services: `AuthService`, `IdentityService`,
+`SessionService`, `AdminService`, and `RoleService`. Health uses standard
+`grpc.health.v1.Health`. HTTP health, metrics, and Swagger routes remain
+HTTP-only.
+
+Import the generated Go client directly from this module; there is no separate
+SDK:
+
+```go
+import (
+    "context"
+    "time"
+
+    authv1 "github.com/olegkapshai/auth-master/api/auth/v1"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/credentials/insecure"
+    "google.golang.org/grpc/metadata"
+)
+
+conn, err := grpc.NewClient(
+    "localhost:9090",
+    grpc.WithTransportCredentials(insecure.NewCredentials()), // local development only
+)
+if err != nil { /* handle */ }
+defer conn.Close()
+
+ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+defer cancel()
+ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+humanAccessToken)
+me, err := authv1.NewIdentityServiceClient(conn).GetMe(ctx, &authv1.GetMeRequest{})
+```
+
+For TLS, set both `GRPC_TLS_CERT_FILE` and `GRPC_TLS_KEY_FILE` on authd and use
+`credentials.NewClientTLSFromFile` in the client. Setting only one server file
+is a startup error. Plaintext credentials are for trusted local development
+only. The host address is `localhost:${GRPC_PORT:-9090}`; from another Compose
+service it is `authd:9090`. The nginx SPA gateway proxies REST only.
+
+For Compose TLS, keep the certificate and key outside the image and mount them
+read-only with an override such as `docker-compose.override.yml`:
+
+```yaml
+services:
+  authd:
+    environment:
+      GRPC_TLS_CERT_FILE: /run/grpc-tls/server.crt
+      GRPC_TLS_KEY_FILE: /run/grpc-tls/server.key
+    volumes:
+      - ./certs/server.crt:/run/grpc-tls/server.crt:ro
+      - ./certs/server.key:/run/grpc-tls/server.key:ro
+```
+
+The production container runs as UID/GID `65532:65532`. Make the private key
+readable by that identity but not other users (for example, owner `65532` and
+mode `0400`, or an equivalent group-readable `0440` arrangement); a certificate
+may be `0444`. The certificate SANs must cover every client name in use, usually
+`localhost` for host clients and `authd` for clients in the Compose network.
+Configure the client's TLS server name to match the selected SAN.
+
+Identity, Session, Admin, and Role RPCs require a human access JWT in
+`authorization` metadata. The actor comes only from verified JWT `sub`; request
+messages never accept an actor ID. Service JWTs are valid for issuance and
+`InspectToken` but are rejected by human and RBAC RPCs. `CheckTokenRole` and
+`CheckTokenRoleWithTag` are intentionally different: put the end user's human
+token in the `access_token` message field, not metadata. The service evaluates
+that token's subject without trusting a caller-supplied user ID.
+
+Banning a user increments that account's token version and revokes every
+refresh session immediately. Existing REST and gRPC bearer tokens therefore
+remain invalid after an unban; the user must authenticate again to receive
+credentials for the new version. Unbanning restores login, not old sessions.
+
+Always set a deadline. Retry read-only queries and health checks only for
+transient `UNAVAILABLE` failures. Creation, rotation, grants, revocation,
+password, refresh, and OTP flows have no general idempotency key and must not be
+blindly retried. Errors use canonical status codes plus stable
+`google.rpc.ErrorInfo`; secret credentials are never returned in errors.
+
+`StartStepUp2FA.ttl` defaults to five minutes when absent or zero, accepts
+values through 24 hours, and rejects negative or larger values.
+`CreateRegistrationInvite.ttl` defaults to 24 hours when absent or zero and
+rejects negative or unrepresentable durations. `AssignRole.valid_until`, when
+present, must be strictly in the future and an invalid value cannot replace an
+existing membership. Role requests transition once from pending to approved or
+rejected; a second decision returns `FAILED_PRECONDITION` with
+`REQUEST_NOT_PENDING`. Paginated list totals are present only on the first
+request, while subsequent requests carry the opaque `next_cursor`.
+
+Reflection is disabled by default; set `GRPC_REFLECTION=true` only in a trusted
+development environment. `grpc.health.v1.Health/Check` reports `SERVING` after
+bootstrap and both listeners are bound, and `NOT_SERVING` during graceful
+shutdown.
+
+Use `make proto` to lint and regenerate the contract. `make proto-check` fails
+when generated Go files drift or the contract breaks the committed
+`api/auth/v1/auth-v1-baseline.binpb` descriptor; run the standalone check with
+`make proto-breaking`. `make proto` never changes the baseline. Advance it only
+after an explicit compatibility review with `make proto-baseline-update`, then
+review and commit the binary diff separately.
 
 For local development with Vite hot reload, run these commands in separate
 terminals and open `http://localhost:5173`:
@@ -224,6 +329,9 @@ make swagger
 - `internal/repository` — PostgreSQL persistence and migrations.
 - `internal/service` — authentication and authorization rules.
 - `internal/transport/http` — REST transport and middleware.
+- `internal/transport/grpc` — typed gRPC transport and authentication boundary.
+- `internal/transport/parity` — exact REST-to-RPC contract manifest.
+- `api/auth/v1` — protobuf contract and committed Go client/server stubs.
 - `internal/testutil` — integration-test infrastructure.
 - `web/src` — SPA source.
 - `web/e2e` — Playwright tests.

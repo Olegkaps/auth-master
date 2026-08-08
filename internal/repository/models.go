@@ -20,6 +20,7 @@ type userModel struct {
 	BannedAt          *time.Time
 	BannedBy          *uuid.UUID `gorm:"type:uuid"`
 	BanReason         string     `gorm:"not null;default:''"`
+	TokenVersion      int64      `gorm:"not null;default:0"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }

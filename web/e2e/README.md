@@ -1,5 +1,10 @@
 # E2E UI tests (Playwright)
 
+The native gRPC API has no browser-visible surface, so transport parity does not
+add a Playwright journey. The complete REST/SPA suite still runs as regression
+coverage because REST and gRPC share service-layer use cases. Native gRPC is
+covered by Go integration and real-TCP tests under `make test-integration`.
+
 These tests drive the real SPA in a browser and exercise the key user journeys
 against a live backend and Mailpit (OTP codes are read from Mailpit's API).
 

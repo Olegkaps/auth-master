@@ -24,7 +24,7 @@ func changePwd2FA(t *testing.T, a *Auth, repo repository.Repository, ctx context
 	return a.ChangePassword(ctx, uid, oldPwd, newPwd, code)
 }
 
-func testDB(t *testing.T) (repository.Repository, func()) {
+func testDB(t *testing.T) (*repository.Store, func()) {
 	t.Helper()
 	ctx := context.Background()
 	dsn, terminate := testutil.StartPostgres16TestcontainerForTest(t, ctx)

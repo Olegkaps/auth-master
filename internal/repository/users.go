@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func (s *Store) CreateHumanUser(ctx context.Context, login, email, passwordHash string) (uuid.UUID, error) {
@@ -76,6 +77,7 @@ func rowToUser(m *userModel) *domain.User {
 		BannedAt:          m.BannedAt,
 		BannedBy:          m.BannedBy,
 		BanReason:         m.BanReason,
+		TokenVersion:      m.TokenVersion,
 		CreatedAt:         m.CreatedAt,
 	}
 }
@@ -189,8 +191,22 @@ func (s *Store) SearchUsers(ctx context.Context, query string, after *PageCursor
 }
 
 func (s *Store) SetUserBan(ctx context.Context, userID uuid.UUID, bannedBy *uuid.UUID, reason string) error {
+	return s.setUserBan(ctx, userID, bannedBy, reason, nil)
+}
+
+func (s *Store) setUserBan(ctx context.Context, userID uuid.UUID, bannedBy *uuid.UUID, reason string, afterUserLocked func()) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user userModel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).Take(&user).Error; err != nil {
+			return err
+		}
+		if afterUserLocked != nil {
+			afterUserLocked()
+		}
 		values := map[string]any{"banned_at": time.Now(), "banned_by": bannedBy, "ban_reason": strings.TrimSpace(reason)}
+		if bannedBy != nil {
+			values["token_version"] = gorm.Expr("token_version + 1")
+		}
 		if bannedBy == nil {
 			values = map[string]any{"banned_at": nil, "banned_by": nil, "ban_reason": ""}
 		}

@@ -99,7 +99,7 @@ func TestIntegration_RepoSurface(t *testing.T) {
 
 	exp := time.Now().Add(time.Hour)
 	tok := []byte{1, 2, 3, 4}
-	_, err = s.UpsertRefreshSession(ctx, humanID, "d1", "lbl", tok, exp)
+	_, _, err = s.UpsertRefreshSessionForActiveVersion(ctx, humanID, 0, "d1", "lbl", tok, exp, 10)
 	require.NoError(t, err)
 	c, err := s.CountActiveRefreshSessions(ctx, humanID)
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestIntegration_RepoSurface(t *testing.T) {
 	require.NoError(t, s.RevokeRefreshSession(ctx, row.ID))
 
 	tok2 := []byte{5, 6, 7, 8}
-	rid2, err := s.UpsertRefreshSession(ctx, svcID, "d2", "", tok2, exp)
+	_, rid2, err := s.UpsertRefreshSessionForActiveVersion(ctx, svcID, 0, "d2", "", tok2, exp, 10)
 	require.NoError(t, err)
 	require.NoError(t, s.RevokeRefreshByHash(ctx, svcID, tok2))
 	_, err = s.GetRefreshByID(ctx, rid2)
@@ -156,17 +156,18 @@ func TestIntegration_UpsertReplaceRefresh(t *testing.T) {
 	require.NoError(t, err)
 	exp := time.Now().Add(time.Hour)
 	h1 := []byte{1, 1, 1}
-	id1, err := s.UpsertRefreshSession(ctx, uid, "dev", "", h1, exp)
+	_, id1, err := s.UpsertRefreshSessionForActiveVersion(ctx, uid, 0, "dev", "", h1, exp, 10)
 	require.NoError(t, err)
 	h2 := []byte{2, 2, 2}
-	id2, err := s.UpsertRefreshSession(ctx, uid, "dev", "x", h2, exp)
+	_, id2, err := s.UpsertRefreshSessionForActiveVersion(ctx, uid, 0, "dev", "x", h2, exp, 10)
 	require.NoError(t, err)
 	require.Equal(t, id1, id2)
 	found, err := s.FindRefreshByTokenHash(ctx, h2)
 	require.NoError(t, err)
 	require.NotNil(t, found)
 	h3 := []byte{3, 3, 3}
-	require.NoError(t, s.ReplaceRefreshToken(ctx, found.ID, h2, h3, exp.Add(time.Hour)))
+	_, err = s.RotateRefreshSessionForActiveVersion(ctx, uid, found.ID, 0, h2, h3, exp.Add(time.Hour))
+	require.NoError(t, err)
 }
 
 func TestIntegration_RoleRequestApprove(t *testing.T) {

@@ -30,10 +30,8 @@ type Repository interface {
 	CountHumanUsers(ctx context.Context) (int64, error)
 	SetSuperuser(ctx context.Context, userID uuid.UUID, v bool) error
 
-	CountActiveRefreshSessions(ctx context.Context, userID uuid.UUID) (int64, error)
-	DeleteOldestRefreshSession(ctx context.Context, userID uuid.UUID) error
-	UpsertRefreshSession(ctx context.Context, userID uuid.UUID, deviceID, deviceLabel string, tokenHash []byte, expiresAt time.Time) (uuid.UUID, error)
-	ReplaceRefreshToken(ctx context.Context, id uuid.UUID, oldHash, newHash []byte, expiresAt time.Time) error
+	UpsertRefreshSessionForActiveVersion(ctx context.Context, userID uuid.UUID, expectedTokenVersion int64, deviceID, deviceLabel string, tokenHash []byte, expiresAt time.Time, maxSessions int) (*domain.User, uuid.UUID, error)
+	RotateRefreshSessionForActiveVersion(ctx context.Context, userID, sessionID uuid.UUID, expectedTokenVersion int64, oldHash, newHash []byte, expiresAt time.Time) (*domain.User, error)
 	GetRefreshByUserDevice(ctx context.Context, userID uuid.UUID, deviceID string) (*RefreshRow, error)
 	GetRefreshByID(ctx context.Context, id uuid.UUID) (*RefreshRow, error)
 	ListRefreshSessions(ctx context.Context, userID uuid.UUID) ([]domain.RefreshSession, error)

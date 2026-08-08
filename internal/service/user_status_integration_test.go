@@ -3,12 +3,44 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/jwtutil"
 	"github.com/olegkapshai/auth-master/internal/mail"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIntegration_StaleOTPOrMagicUserCannotIssueAfterBanCycle(t *testing.T) {
+	repo, done := testDB(t)
+	defer done()
+	ctx := context.Background()
+	a, err := NewAuth(testConfig(), repo, &mail.Sender{}, nil)
+	require.NoError(t, err)
+	require.NoError(t, a.EnsureBootstrap(ctx))
+
+	adminID, err := repo.CreateHumanUser(ctx, "stale-issue-admin", "stale-issue-admin@test.dev", "hash")
+	require.NoError(t, err)
+	userID, err := repo.CreateHumanUser(ctx, "stale-issue-user", "stale-issue-user@test.dev", "hash")
+	require.NoError(t, err)
+	staleUser, err := repo.GetUserByID(ctx, userID)
+	require.NoError(t, err)
+	require.NotNil(t, staleUser)
+	originalHash := []byte("existing-device-session")
+	_, _, err = repo.UpsertRefreshSessionForActiveVersion(ctx, userID, 0, "device", "browser", originalHash, time.Now().Add(time.Hour), 10)
+	require.NoError(t, err)
+	require.NoError(t, repo.SetUserBan(ctx, userID, &adminID, "incident"))
+	require.NoError(t, repo.SetUserBan(ctx, userID, nil, ""))
+
+	_, _, err = a.issueTokenPair(ctx, staleUser, "device", "browser")
+	require.ErrorIs(t, err, ErrInvalidCredentials,
+		"OTP and magic-link completion share issueTokenPair and must not issue from a user loaded before the ban")
+	row, err := repo.GetRefreshByUserDevice(ctx, userID, "device")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.Equal(t, originalHash, row.TokenHash)
+	require.NotNil(t, row.RevokedAt)
+}
 
 func TestIntegration_BanRevokesExistingAuthorizationAndUnbanRestoresLogin(t *testing.T) {
 	repo, done := testDB(t)
@@ -42,6 +74,10 @@ func TestIntegration_BanRevokesExistingAuthorizationAndUnbanRestoresLogin(t *tes
 	require.ErrorIs(t, err, ErrBanned)
 
 	require.NoError(t, a.UnbanUser(ctx, admin.ID, userID))
+	_, err = a.VerifyAccessToken(ctx, tokens.AccessToken, jwtutil.TypeAccess)
+	require.ErrorIs(t, err, ErrInvalidCredentials, "unban must not resurrect an access token issued before ban")
+	_, err = a.Refresh(ctx, tokens.RefreshToken, "ban-live-device", "browser")
+	require.Error(t, err, "unban must not resurrect a revoked refresh token")
 	login, err := a.LoginPassword(ctx, "ban-live", "Ban-Live-Password-11!", nil)
 	require.NoError(t, err)
 	require.True(t, login.OTPRequired)

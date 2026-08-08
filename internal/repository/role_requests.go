@@ -20,6 +20,8 @@ type RoleRequest struct {
 	DecidedBy    *uuid.UUID
 }
 
+var ErrRoleRequestNotPending = errors.New("role request is not pending")
+
 func (s *Store) CreateRoleRequest(ctx context.Context, requesterID, targetUserID, roleID uuid.UUID) (uuid.UUID, error) {
 	row := roleRequestModel{
 		RequesterID:  requesterID,
@@ -66,7 +68,7 @@ func (s *Store) DecideRoleRequestWithMembership(ctx context.Context, id uuid.UUI
 			return err
 		}
 		if request.Status != string(domain.RoleRequestPending) {
-			return errors.New("request not pending")
+			return ErrRoleRequestNotPending
 		}
 		if approved {
 			grantor := decidedBy
@@ -81,7 +83,7 @@ func (s *Store) DecideRoleRequestWithMembership(ctx context.Context, id uuid.UUI
 			return res.Error
 		}
 		if res.RowsAffected != 1 {
-			return errors.New("request not pending")
+			return ErrRoleRequestNotPending
 		}
 		return nil
 	})

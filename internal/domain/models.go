@@ -35,6 +35,7 @@ type User struct {
 	BannedAt          *time.Time
 	BannedBy          *uuid.UUID
 	BanReason         string
+	TokenVersion      int64
 	CreatedAt         time.Time
 }
 

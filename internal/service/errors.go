@@ -15,4 +15,7 @@ var (
 	ErrInvalidInvite      = errors.New("invalid or expired registration invite")
 	ErrCannotBanSelf      = errors.New("cannot ban yourself")
 	ErrCannotBanSuperuser = errors.New("cannot ban a superuser")
+	ErrTagNotConfigured   = errors.New("tag is not configured for role")
+	ErrInvalidArgument    = errors.New("invalid argument")
+	ErrRequestNotPending  = errors.New("role request is not pending")
 )

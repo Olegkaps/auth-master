@@ -22,16 +22,20 @@ COMPOSE ?= $(shell command -v podman >/dev/null 2>&1 && echo 'podman compose' ||
 GOLANGCI_LINT_VER ?= v2.10.1
 SWAG_VER          ?= v1.16.4
 GOTESTSUM_VER     ?= v1.13.0
+BUF_VER           ?= v1.61.0
+PROTOC_GEN_GO_VER ?= v1.36.11
+PROTOC_GEN_GRPC_VER ?= v1.5.1
+PROTO_TOOLS_DIR   ?= $(CURDIR)/.tools/bin
 PLAYWRIGHT_INSTALL ?= npx playwright install chromium
 
 # gotestsum prints an actionable summary. Use PATH or run the pinned module.
 GOTESTSUM = $(shell command -v gotestsum 2>/dev/null || echo 'go run gotest.tools/gotestsum@$(GOTESTSUM_VER)')
 TESTSUM   = $(GOTESTSUM) --format testname --
 
-GOFMT_PATHS := $(shell find cmd internal tools -name '*.go' 2>/dev/null | sort)
+GOFMT_PATHS := $(shell find api cmd internal tools -name '*.go' 2>/dev/null | sort)
 
 .PHONY: help install env-file \
-	up down logs run dev web-dev \
+	up down logs run dev web-dev grpc-smoke proto proto-check proto-lint proto-breaking proto-baseline-update proto-tools \
 	test test-unit test-integration test-e2e test-race \
 	test-fuzz web-build docker-build \
 	fmt fmt-check vet lint lint-go lint-ts check swagger
@@ -56,6 +60,7 @@ install: ## Install Go tools, web dependencies, and Playwright
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VER)
 	go install github.com/swaggo/swag/cmd/swag@$(SWAG_VER)
 	go install gotest.tools/gotestsum@$(GOTESTSUM_VER)
+	$(MAKE) proto-tools
 	@command -v npm >/dev/null 2>&1 && { cd web && npm ci --no-audit && $(PLAYWRIGHT_INSTALL); } \
 		|| echo "npm not found — skipping web dependencies"
 
@@ -66,7 +71,37 @@ install: ## Install Go tools, web dependencies, and Playwright
 up: | .env
 up: ## Start the production SPA, authd, PostgreSQL, and Mailpit through Compose
 	$(COMPOSE) up --build -d
-	@echo "app: http://localhost:8080   swagger: http://localhost:8080/swagger/   mailpit: http://localhost:8025"
+	@echo "app: http://localhost:8080   grpc: localhost:$${GRPC_PORT:-9090}   swagger: http://localhost:8080/swagger/   mailpit: http://localhost:8025"
+
+proto-tools: ## Install pinned protobuf generation and lint tools locally
+	mkdir -p '$(PROTO_TOOLS_DIR)'
+	GOBIN='$(PROTO_TOOLS_DIR)' go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VER)
+	GOBIN='$(PROTO_TOOLS_DIR)' go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GRPC_VER)
+	GOBIN='$(PROTO_TOOLS_DIR)' go install github.com/bufbuild/buf/cmd/buf@$(BUF_VER)
+
+proto: proto-tools proto-lint ## Regenerate committed protobuf and gRPC Go files
+	PATH='$(PROTO_TOOLS_DIR)':$$PATH protoc -I . \
+		--go_out=paths=source_relative:. \
+		--go-grpc_out=paths=source_relative,require_unimplemented_servers=false:. \
+		api/auth/v1/auth.proto
+
+proto-lint: proto-tools proto-breaking ## Lint protobuf contracts and reject v1 breaking changes
+	'$(PROTO_TOOLS_DIR)/buf' lint
+
+proto-breaking: proto-tools ## Compare protobuf contracts with the committed v1 compatibility baseline
+	'$(PROTO_TOOLS_DIR)/buf' breaking . --against api/auth/v1/auth-v1-baseline.binpb --limit-to-input-files
+
+proto-baseline-update: proto-tools ## Deliberately advance the reviewed protobuf v1 baseline
+	'$(PROTO_TOOLS_DIR)/buf' build . -o api/auth/v1/auth-v1-baseline.binpb
+
+proto-check: proto-tools proto-lint proto-breaking ## Fail on breaking changes or committed protobuf Go drift
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	PATH='$(PROTO_TOOLS_DIR)':$$PATH protoc -I . \
+		--go_out=paths=source_relative:"$$tmp" \
+		--go-grpc_out=paths=source_relative,require_unimplemented_servers=false:"$$tmp" \
+		api/auth/v1/auth.proto; \
+	cmp api/auth/v1/auth.pb.go "$$tmp/api/auth/v1/auth.pb.go"; \
+	cmp api/auth/v1/auth_grpc.pb.go "$$tmp/api/auth/v1/auth_grpc.pb.go"
 
 down: | .env
 down: ## Stop the stack
@@ -86,6 +121,9 @@ dev: ## Start infrastructure and run the backend locally
 	go run ./cmd/authd
 
 run: dev ## Alias for make dev
+
+grpc-smoke: ## Check a running authd through standard gRPC health (GRPC_SMOKE_ADDR overrides localhost:9090)
+	go run ./tools/grpc-smoke
 
 web-dev: ## Start the Vite SPA server on port 5173
 	cd web && npm run dev
@@ -150,7 +188,7 @@ docker-build: ## Build the production authd container image through Compose
 # Lint and format checks
 # -----------------------------------------------------------------------------
 
-lint: fmt-check vet lint-go lint-ts ## Run all Go and TypeScript checks
+lint: fmt-check proto-check vet lint-go lint-ts ## Run all Go and TypeScript checks
 
 fmt: ## gofmt -w
 	@gofmt -w $(GOFMT_PATHS)

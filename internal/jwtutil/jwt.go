@@ -14,21 +14,23 @@ const (
 )
 
 type Claims struct {
-	Login string `json:"login"`
-	Typ   string `json:"typ"`
-	Kid   string `json:"kid"`
+	Login        string `json:"login"`
+	Typ          string `json:"typ"`
+	Kid          string `json:"kid"`
+	TokenVersion int64  `json:"token_version"`
 	jwt.RegisteredClaims
 }
 
-func SignAccess(secret []byte, kid, userID, login, typ string, ttl time.Duration) (string, error) {
+func SignAccess(secret []byte, kid, userID, login, typ string, tokenVersion int64, ttl time.Duration) (string, error) {
 	if typ != TypeAccess && typ != TypeService {
 		return "", errors.New("invalid typ for access jwt")
 	}
 	now := time.Now()
 	claims := Claims{
-		Login: login,
-		Typ:   typ,
-		Kid:   kid,
+		Login:        login,
+		Typ:          typ,
+		Kid:          kid,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),

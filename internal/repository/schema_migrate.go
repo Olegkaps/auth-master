@@ -44,6 +44,25 @@ func MigrateDB(db *gorm.DB) error {
 	); err != nil {
 		return fmt.Errorf("automigrate: %w", err)
 	}
+	// Deployments that predate token_version could already contain banned
+	// users and credentials issued without the claim (which decodes as version
+	// 0). Advance those subjects and revoke their live refresh sessions in one
+	// atomic PostgreSQL statement. Active legacy users retain version 0
+	// compatibility, while reruns leave both versions and revocation timestamps
+	// untouched because migrated_users is then empty.
+	if err := db.Exec(`
+		WITH migrated_users AS (
+			UPDATE users
+			SET token_version = 1
+			WHERE banned_at IS NOT NULL AND token_version = 0
+			RETURNING id
+		)
+		UPDATE refresh_sessions AS rs
+		SET revoked_at = CURRENT_TIMESTAMP
+		FROM migrated_users AS u
+		WHERE rs.user_id = u.id AND rs.revoked_at IS NULL`).Error; err != nil {
+		return fmt.Errorf("token-version and refresh-session migration for banned legacy users: %w", err)
+	}
 	if err := migrateLegacyRoleNames(db); err != nil {
 		return err
 	}

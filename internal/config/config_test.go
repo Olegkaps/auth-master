@@ -58,3 +58,43 @@ func TestLoad_HTTPAddrAndCORS(t *testing.T) {
 		t.Fatalf("CORS: %#v", c.CORSAllowedOrigins)
 	}
 }
+
+func TestLoadGRPCConfiguration(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		c, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.GRPCAddr != ":9090" || c.GRPCReflection || c.GRPCMaxReceiveBytes != 4*1024*1024 || c.GRPCMaxSendBytes != 4*1024*1024 {
+			t.Fatalf("unexpected gRPC defaults: %+v", c)
+		}
+	})
+	t.Run("tls pair required", func(t *testing.T) {
+		t.Setenv("GRPC_TLS_CERT_FILE", "/tmp/cert.pem")
+		t.Setenv("GRPC_TLS_KEY_FILE", "")
+		if _, err := Load(); err == nil {
+			t.Fatal("expected TLS pair validation error")
+		}
+	})
+	t.Run("positive limits required", func(t *testing.T) {
+		t.Setenv("GRPC_MAX_RECEIVE_BYTES", "0")
+		if _, err := Load(); err == nil {
+			t.Fatal("expected message size validation error")
+		}
+	})
+}
+
+func TestLoadRejectsNonPositiveMaxSessionsPerUser(t *testing.T) {
+	for _, value := range []string{"0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("MAX_SESSIONS_PER_USER", value)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected MAX_SESSIONS_PER_USER=%s to be rejected", value)
+			}
+			if err.Error() != "MAX_SESSIONS_PER_USER must be positive" {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

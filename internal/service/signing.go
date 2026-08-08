@@ -90,3 +90,16 @@ func (a *Auth) RotateSigningKey(ctx context.Context) error {
 	}
 	return a.repo.DeprecateCurrentAndSet(ctx, kid, cipher, nonce)
 }
+
+// RotateSigningKeyForActor applies the same superuser authorization for every
+// transport before rotating signing material.
+func (a *Auth) RotateSigningKeyForActor(ctx context.Context, actor uuid.UUID) error {
+	ok, err := a.IsSuperuser(ctx, actor)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrForbidden
+	}
+	return a.RotateSigningKey(ctx)
+}

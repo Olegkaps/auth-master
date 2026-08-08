@@ -421,6 +421,16 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(assignBody)), nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+		expiredAssignment := fmt.Sprintf(`{"user_id":%q,"level":"direct_member","valid_until":%q}`, uid.String(), time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(expiredAssignment)), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusBadRequest, r.StatusCode)
+		ridUUID, err := uuid.Parse(rid)
+		require.NoError(t, err)
+		levelAfterInvalid, found, err := repo.GetUserRoleLevel(ctx, uid, ridUUID, time.Now())
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, domain.RoleMember, levelAfterInvalid, "invalid valid_until must not overwrite a live membership")
 
 		// Effective access is server authoritative and includes inherited child access.
 		r = do(http.MethodGet, "/v1/me/role-access", nil, nil)
@@ -446,9 +456,7 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(badAtomicBody)), nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusBadRequest, r.StatusCode)
-		ridUUID, err := uuid.Parse(rid)
-		require.NoError(t, err)
-		_, found, err := repo.GetUserRoleLevel(ctx, atomicTarget, ridUUID, time.Now())
+		_, found, err = repo.GetUserRoleLevel(ctx, atomicTarget, ridUUID, time.Now())
 		require.NoError(t, err)
 		require.False(t, found)
 		goodAtomicBody := fmt.Sprintf(`{"user_id":%q,"level":"member","tag_grants":["read"]}`, atomicTarget.String())
@@ -528,6 +536,9 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":true}`)), nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":false}`)), nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 
 		r = do(http.MethodDelete, "/v1/roles/"+rid+"/members/"+uid.String(), nil, nil)
 		require.NoError(t, r.Body.Close())
@@ -661,6 +672,11 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.Equal(t, http.StatusOK, r.StatusCode)
 		corr := st["correlation_id"]
 		require.NotEmpty(t, corr)
+		for _, body := range []string{`{"ttl_seconds":-1}`, `{"ttl_seconds":86401}`, `{"ttl_seconds":9223372037}`} {
+			r = do(http.MethodPost, "/v1/auth/step-up-2fa/start", bytes.NewReader([]byte(body)), nil)
+			require.NoError(t, r.Body.Close())
+			require.Equal(t, http.StatusBadRequest, r.StatusCode)
+		}
 
 		r = do(http.MethodGet, "/v1/auth/step-up-2fa/status?correlation_id="+corr, nil, nil)
 		require.NoError(t, r.Body.Close())
@@ -689,18 +705,57 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		r := do(http.MethodPost, "/v1/admin/registration-invites", bytes.NewReader([]byte(`{"ttl_seconds":3600}`)), h)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusCreated, r.StatusCode)
+		for _, body := range []string{`{"ttl_seconds":-1}`, `{"ttl_seconds":9223372037}`} {
+			r = do(http.MethodPost, "/v1/admin/registration-invites", bytes.NewReader([]byte(body)), h)
+			require.NoError(t, r.Body.Close())
+			require.Equal(t, http.StatusBadRequest, r.StatusCode)
+		}
+		r = do(http.MethodPost, "/v1/admin/registration-invites", bytes.NewReader([]byte(`{"ttl_seconds":0}`)), h)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusCreated, r.StatusCode)
 
 		r = do(http.MethodGet, "/v1/admin/users?limit=50", nil, nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusOK, r.StatusCode)
 		banTarget, err := repo.CreateHumanUser(ctx, "ban-http", "ban-http@test.dev", "hash")
 		require.NoError(t, err)
+		banMagic := "ban-http-before-ban"
+		_, err = repo.InsertMagicLink(ctx, a.IntegrationMagicHash(banMagic), banTarget, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+		banTokens, _, err := a.CompleteMagicLink(ctx, banMagic, "ban-http-device", "integration")
+		require.NoError(t, err)
+		getBanTarget := func(accessToken string) int {
+			req, requestErr := http.NewRequest(http.MethodGet, base+"/v1/me", nil)
+			require.NoError(t, requestErr)
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			response, requestErr := client.Do(req)
+			require.NoError(t, requestErr)
+			require.NoError(t, response.Body.Close())
+			return response.StatusCode
+		}
+		require.Equal(t, http.StatusOK, getBanTarget(banTokens.AccessToken))
 		r = do(http.MethodPost, "/v1/admin/users/"+banTarget.String()+"/ban", bytes.NewReader([]byte(`{"reason":"test"}`)), h)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+		require.Equal(t, http.StatusUnauthorized, getBanTarget(banTokens.AccessToken))
+		r, err = client.Post(base+"/v1/auth/refresh", "application/json", strings.NewReader(fmt.Sprintf(`{"refresh_token":%q,"device_id":"ban-http-device"}`, banTokens.RefreshToken)))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode)
 		r = do(http.MethodDelete, "/v1/admin/users/"+banTarget.String()+"/ban", nil, h)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
+		require.Equal(t, http.StatusUnauthorized, getBanTarget(banTokens.AccessToken), "unban must not resurrect the old bearer")
+		r, err = client.Post(base+"/v1/auth/refresh", "application/json", strings.NewReader(fmt.Sprintf(`{"refresh_token":%q,"device_id":"ban-http-device"}`, banTokens.RefreshToken)))
+		require.NoError(t, err)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode, "unban must not resurrect the old refresh session")
+		newBanMagic := "ban-http-after-unban"
+		_, err = repo.InsertMagicLink(ctx, a.IntegrationMagicHash(newBanMagic), banTarget, time.Now().Add(time.Minute))
+		require.NoError(t, err)
+		newBanTokens, _, err := a.CompleteMagicLink(ctx, newBanMagic, "ban-http-device-new", "integration")
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, getBanTarget(newBanTokens.AccessToken))
 
 		superTarget, err := repo.CreateHumanUser(ctx, "super-ban-http", "super-ban-http@test.dev", "hash")
 		require.NoError(t, err)

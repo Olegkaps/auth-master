@@ -38,15 +38,16 @@ func (a *Auth) PreviewRegistrationInvite(ctx context.Context, rawToken string) (
 // CreateRegistrationInvite returns a one-time raw token (show once). Only superusers may call this.
 // When superuser is true, the registered account is granted superuser access.
 func (a *Auth) CreateRegistrationInvite(ctx context.Context, adminID uuid.UUID, lockedEmail *string, superuser bool, ttl time.Duration) (rawToken string, expiresAt time.Time, registrationURL string, err error) {
+	ttl, err = normalizeInviteTTL(ttl)
+	if err != nil {
+		return "", time.Time{}, "", err
+	}
 	ok, err := a.IsSuperuser(ctx, adminID)
 	if err != nil {
 		return "", time.Time{}, "", err
 	}
 	if !ok {
 		return "", time.Time{}, "", ErrForbidden
-	}
-	if ttl <= 0 {
-		ttl = 24 * time.Hour
 	}
 	raw, err := crypto.RandomBytes(32)
 	if err != nil {

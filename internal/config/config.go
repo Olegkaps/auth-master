@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
@@ -9,6 +11,13 @@ import (
 // Config is loaded from environment (and optional .env via cleanenv ReadEnv).
 type Config struct {
 	HTTPAddr              string        `env:"HTTP_ADDR" env-default:":8080"`
+	GRPCAddr              string        `env:"GRPC_ADDR" env-default:":9090"`
+	GRPCTLSCertFile       string        `env:"GRPC_TLS_CERT_FILE" env-default:""`
+	GRPCTLSKeyFile        string        `env:"GRPC_TLS_KEY_FILE" env-default:""`
+	GRPCReflection        bool          `env:"GRPC_REFLECTION" env-default:"false"`
+	GRPCMaxReceiveBytes   int           `env:"GRPC_MAX_RECEIVE_BYTES" env-default:"4194304"`
+	GRPCMaxSendBytes      int           `env:"GRPC_MAX_SEND_BYTES" env-default:"4194304"`
+	ShutdownTimeout       time.Duration `env:"SHUTDOWN_TIMEOUT" env-default:"10s"`
 	DatabaseURL           string        `env:"DATABASE_URL" env-default:"postgres://auth:auth@localhost:5432/auth?sslmode=disable"`
 	LogLevel              string        `env:"LOG_LEVEL" env-default:"info"`
 	AccessTokenTTL        time.Duration `env:"ACCESS_TOKEN_TTL" env-default:"15m"`
@@ -54,6 +63,18 @@ func Load() (Config, error) {
 	var c Config
 	if err := cleanenv.ReadEnv(&c); err != nil {
 		return Config{}, err
+	}
+	if (strings.TrimSpace(c.GRPCTLSCertFile) == "") != (strings.TrimSpace(c.GRPCTLSKeyFile) == "") {
+		return Config{}, errors.New("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set together")
+	}
+	if c.GRPCMaxReceiveBytes <= 0 || c.GRPCMaxSendBytes <= 0 {
+		return Config{}, errors.New("gRPC message size limits must be positive")
+	}
+	if c.ShutdownTimeout <= 0 {
+		return Config{}, errors.New("SHUTDOWN_TIMEOUT must be positive")
+	}
+	if c.MaxSessionsPerUser <= 0 {
+		return Config{}, errors.New("MAX_SESSIONS_PER_USER must be positive")
 	}
 	return c, nil
 }

@@ -45,7 +45,7 @@ func TestIntegration_UserAndSession(t *testing.T) {
 
 	th := []byte{1, 2, 3}
 	exp := time.Now().Add(time.Hour)
-	_, err = s.UpsertRefreshSession(ctx, id, "dev1", "laptop", th, exp)
+	_, _, err = s.UpsertRefreshSessionForActiveVersion(ctx, id, 0, "dev1", "laptop", th, exp, 10)
 	require.NoError(t, err)
 
 	row, err := s.FindRefreshByTokenHash(ctx, th)
@@ -53,7 +53,8 @@ func TestIntegration_UserAndSession(t *testing.T) {
 	require.NotNil(t, row)
 
 	nh := []byte{9, 9, 9}
-	require.NoError(t, s.ReplaceRefreshToken(ctx, row.ID, th, nh, exp.Add(time.Hour)))
+	_, err = s.RotateRefreshSessionForActiveVersion(ctx, id, row.ID, 0, th, nh, exp.Add(time.Hour))
+	require.NoError(t, err)
 }
 
 func TestIntegration_SigningKey(t *testing.T) {

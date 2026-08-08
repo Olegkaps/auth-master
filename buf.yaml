@@ -1,0 +1,15 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # Empty acknowledgements and shared boolean result messages are deliberate;
+    # requests remain operation-specific for future-compatible evolution.
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_RESPONSE_STANDARD_NAME
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE

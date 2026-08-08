@@ -1,0 +1,282 @@
+syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "github.com/olegkapshai/auth-master/api/auth/v1;authv1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+enum UserKind {
+  USER_KIND_UNSPECIFIED = 0;
+  USER_KIND_HUMAN = 1;
+  USER_KIND_SERVICE = 2;
+}
+
+enum RoleLevel {
+  ROLE_LEVEL_UNSPECIFIED = 0;
+  ROLE_LEVEL_DIRECT_MEMBER = 1;
+  ROLE_LEVEL_MEMBER = 2;
+  ROLE_LEVEL_ROLE_ADMIN = 3;
+}
+
+enum RoleRequestStatus {
+  ROLE_REQUEST_STATUS_UNSPECIFIED = 0;
+  ROLE_REQUEST_STATUS_PENDING = 1;
+  ROLE_REQUEST_STATUS_APPROVED = 2;
+  ROLE_REQUEST_STATUS_REJECTED = 3;
+}
+
+message TokenPair {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message TokenClaims {
+  string subject = 1;
+  string login = 2;
+  string key_id = 3;
+  string token_type = 4;
+}
+
+message User {
+  string id = 1;
+  string login = 2;
+  optional string email = 3;
+  UserKind kind = 4;
+  bool superuser = 5;
+  optional google.protobuf.Timestamp banned_at = 6;
+  string ban_reason = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message Role {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  repeated string parent_ids = 4;
+  repeated string tags = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message UserRole {
+  string id = 1;
+  string user_id = 2;
+  string role_id = 3;
+  RoleLevel level = 4;
+  google.protobuf.Timestamp valid_from = 5;
+  optional google.protobuf.Timestamp valid_until = 6;
+  optional string granted_by = 7;
+}
+
+message RefreshSession {
+  string id = 1;
+  string device_id = 2;
+  optional string device_label = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  bool revoked = 6;
+}
+
+message RoleMember {
+  string user_id = 1;
+  string login = 2;
+  optional string email = 3;
+  RoleLevel level = 4;
+  repeated string tags = 5;
+}
+
+message RoleRequest {
+  string id = 1;
+  string requester_id = 2;
+  string target_user_id = 3;
+  string role_id = 4;
+  RoleRequestStatus status = 5;
+  optional string decided_by = 6;
+}
+
+// PageRequest uses an opaque keyset cursor. page_size defaults to 25 and is
+// limited to 100; a cursor must be returned unchanged to request the next page.
+message PageRequest { string query = 1; string cursor = 2; int32 page_size = 3; }
+
+message PreviewRegistrationInviteRequest { string token = 1; }
+message PreviewRegistrationInviteResponse { bool valid = 1; optional string email = 2; bool superuser = 3; optional google.protobuf.Timestamp expires_at = 4; }
+message RegisterRequest { string invite_token = 1; string login = 2; string email = 3; string password = 4; }
+message RegisterResponse { string user_id = 1; }
+message LoginPasswordRequest { string login = 1; string password = 2; optional string client_ip = 3; }
+message LoginPasswordResponse { bool otp_sent = 1; string login_challenge = 2; bool password_expired = 3; }
+message IssueServiceTokenRequest { string login = 1; string secret = 2; }
+message IssueServiceTokenResponse { string access_token = 1; google.protobuf.Timestamp expires_at = 2; }
+message CheckTokenRoleRequest { string access_token = 1; string role_name = 2; }
+message CheckTokenRoleWithTagRequest { string access_token = 1; string role_name = 2; string tag = 3; }
+message HasRoleResponse { bool has_role = 1; }
+message HasRoleWithTagResponse { bool has_role_with_tag = 1; }
+message InspectTokenRequest { string token = 1; }
+message InspectTokenResponse { TokenClaims claims = 1; }
+message VerifyAccessTokenRequest { string access_token = 1; }
+message VerifyAccessTokenResponse { TokenClaims claims = 1; }
+message VerifyLoginOTPRequest { string challenge = 1; string code = 2; string device_id = 3; string device_label = 4; }
+message VerifyLoginOTPResponse { TokenPair tokens = 1; }
+message StartMagicLinkRequest { string login = 1; }
+message CompleteMagicLinkRequest { string token = 1; string device_id = 2; string device_label = 3; }
+message CompleteMagicLinkResponse { TokenPair tokens = 1; }
+message StartPasswordResetRequest { string login = 1; }
+message CompletePasswordResetRequest { string login = 1; string code = 2; string new_password = 3; }
+message RefreshRequest { string refresh_token = 1; string device_id = 2; string device_label = 3; }
+message RefreshResponse { TokenPair tokens = 1; }
+message LogoutRequest { string refresh_token = 1; }
+message CompleteStepUp2FARequest { string correlation_id = 1; string code = 2; }
+
+message GetMeRequest {}
+message GetMeResponse { User user = 1; }
+message CheckMyRoleRequest { string role_name = 1; }
+message CheckMyRoleWithTagRequest { string role_name = 1; string tag = 2; }
+message ListMyRoleAccessRequest {}
+message EffectiveRoleAccess { string role_id = 1; bool can_manage = 2; }
+message ListMyRoleAccessResponse { repeated EffectiveRoleAccess roles = 1; }
+message StartPasswordChangeOTPRequest {}
+message ChangePasswordRequest { string old_password = 1; string new_password = 2; string code = 3; }
+// ttl defaults to 5 minutes when absent or zero. Negative values and values
+// above 24 hours fail with INVALID_ARGUMENT; (0, 24h] is accepted.
+message StartStepUp2FARequest { google.protobuf.Duration ttl = 1; }
+message StartStepUp2FAResponse { string correlation_id = 1; }
+message GetStepUp2FAStatusRequest { string correlation_id = 1; }
+message GetStepUp2FAStatusResponse { string status = 1; }
+message ExpireStepUp2FARequest { string correlation_id = 1; }
+
+message ListSessionsRequest {}
+message ListSessionsResponse { repeated RefreshSession sessions = 1; }
+message RevokeOwnSessionRequest { string session_id = 1; }
+message StartSessionRevokeOTPRequest {}
+message RevokeSessionWithOTPRequest { string session_id = 1; string code = 2; }
+
+// ttl defaults to 24 hours when absent or zero. It must not be negative and
+// must fit Go's time.Duration; invalid values fail with INVALID_ARGUMENT.
+message CreateRegistrationInviteRequest { optional string email = 1; bool superuser = 2; google.protobuf.Duration ttl = 3; }
+message CreateRegistrationInviteResponse { string token = 1; google.protobuf.Timestamp expires_at = 2; string registration_url = 3; }
+message RotateSigningKeyRequest {}
+message ListUsersRequest { PageRequest page = 1; }
+// total is present only on the first page (a request without cursor).
+message ListUsersResponse { repeated User users = 1; int32 page_size = 2; optional int64 total = 3; string next_cursor = 4; }
+message BanUserRequest { string user_id = 1; string reason = 2; }
+message UnbanUserRequest { string user_id = 1; }
+
+message ListRolesRequest { PageRequest page = 1; }
+// total is present only on the first page (a request without cursor).
+message ListRolesResponse { repeated Role roles = 1; int32 page_size = 2; optional int64 total = 3; string next_cursor = 4; }
+message CreateRoleRequest { string name = 1; string description = 2; repeated string parent_ids = 3; }
+message CreateRoleResponse { string role_id = 1; }
+message DeleteRoleRequest { string role_id = 1; }
+message UpdateRoleDescriptionRequest { string role_id = 1; string description = 2; }
+message SetRoleParentRequest { string role_id = 1; optional string parent_id = 2; }
+message MountRoleRequest { string role_id = 1; string parent_id = 2; }
+message UnmountRoleRequest { string role_id = 1; string parent_id = 2; }
+message ListSubgroupsRequest { string role_id = 1; bool recursive = 2; }
+message ListSubgroupsResponse { repeated Role roles = 1; }
+message AddRoleTagRequest { string role_id = 1; string tag = 2; }
+message DeleteRoleTagRequest { string role_id = 1; string tag = 2; }
+message RenameRoleTagRequest { string role_id = 1; string old_tag = 2; string new_tag = 3; }
+message ListUserRolesRequest { string user_id = 1; }
+message ListUserRolesResponse { repeated UserRole user_roles = 1; }
+message ListRoleMembersRequest { string role_id = 1; }
+message ListRoleMembersResponse { repeated RoleMember members = 1; }
+// valid_until, when present, must be strictly in the future at assignment
+// time. INVALID_ARGUMENT leaves any existing membership unchanged.
+message AssignRoleRequest { string role_id = 1; string user_id = 2; RoleLevel level = 3; optional google.protobuf.Timestamp valid_until = 4; repeated string tag_grants = 5; }
+message GrantMembershipTagRequest { string role_id = 1; string user_id = 2; string tag = 3; }
+message RevokeMembershipTagRequest { string role_id = 1; string user_id = 2; string tag = 3; }
+message RemoveRoleRequest { string role_id = 1; string user_id = 2; }
+message RequestRoleRequest { string role_id = 1; string target_user_id = 2; }
+message RequestRoleResponse {
+  oneof outcome {
+    google.protobuf.Empty granted = 1;
+    string pending_request_id = 2;
+  }
+}
+message ListRoleRequestsRequest { string role_id = 1; }
+message ListRoleRequestsResponse { repeated RoleRequest requests = 1; }
+// Only PENDING requests may transition, exactly once, to APPROVED or REJECTED.
+// A repeated decision fails with FAILED_PRECONDITION/REQUEST_NOT_PENDING.
+message DecideRoleRequestRequest { string request_id = 1; bool approve = 2; }
+
+// AuthService methods are public at the transport layer. Methods carrying an
+// access token evaluate the subject from that message token; they never accept
+// a caller-supplied user id. Service tokens are valid only for issuance and
+// inspection and are rejected by human role checks.
+service AuthService {
+  rpc PreviewRegistrationInvite(PreviewRegistrationInviteRequest) returns (PreviewRegistrationInviteResponse);
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc LoginPassword(LoginPasswordRequest) returns (LoginPasswordResponse);
+  rpc IssueServiceToken(IssueServiceTokenRequest) returns (IssueServiceTokenResponse);
+  rpc CheckTokenRole(CheckTokenRoleRequest) returns (HasRoleResponse);
+  rpc CheckTokenRoleWithTag(CheckTokenRoleWithTagRequest) returns (HasRoleWithTagResponse);
+  rpc InspectToken(InspectTokenRequest) returns (InspectTokenResponse);
+  rpc VerifyAccessToken(VerifyAccessTokenRequest) returns (VerifyAccessTokenResponse);
+  rpc VerifyLoginOTP(VerifyLoginOTPRequest) returns (VerifyLoginOTPResponse);
+  rpc StartMagicLink(StartMagicLinkRequest) returns (google.protobuf.Empty);
+  rpc CompleteMagicLink(CompleteMagicLinkRequest) returns (CompleteMagicLinkResponse);
+  rpc StartPasswordReset(StartPasswordResetRequest) returns (google.protobuf.Empty);
+  rpc CompletePasswordReset(CompletePasswordResetRequest) returns (google.protobuf.Empty);
+  rpc Refresh(RefreshRequest) returns (RefreshResponse);
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty);
+  rpc CompleteStepUp2FA(CompleteStepUp2FARequest) returns (google.protobuf.Empty);
+}
+
+// IdentityService requires exactly one human access token in
+// "authorization: Bearer <token>" metadata. The actor is derived from sub.
+service IdentityService {
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+  rpc CheckMyRole(CheckMyRoleRequest) returns (HasRoleResponse);
+  rpc CheckMyRoleWithTag(CheckMyRoleWithTagRequest) returns (HasRoleWithTagResponse);
+  rpc ListMyRoleAccess(ListMyRoleAccessRequest) returns (ListMyRoleAccessResponse);
+  rpc StartPasswordChangeOTP(StartPasswordChangeOTPRequest) returns (google.protobuf.Empty);
+  rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty);
+  rpc StartStepUp2FA(StartStepUp2FARequest) returns (StartStepUp2FAResponse);
+  rpc GetStepUp2FAStatus(GetStepUp2FAStatusRequest) returns (GetStepUp2FAStatusResponse);
+  rpc ExpireStepUp2FA(ExpireStepUp2FARequest) returns (google.protobuf.Empty);
+}
+
+// SessionService requires human bearer metadata and operates on that actor.
+service SessionService {
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc RevokeOwnSession(RevokeOwnSessionRequest) returns (google.protobuf.Empty);
+  rpc StartSessionRevokeOTP(StartSessionRevokeOTPRequest) returns (google.protobuf.Empty);
+  rpc RevokeSessionWithOTP(RevokeSessionWithOTPRequest) returns (google.protobuf.Empty);
+}
+
+// AdminService requires human bearer metadata; individual RPCs additionally
+// enforce superuser authorization and return canonical gRPC status codes.
+service AdminService {
+  rpc CreateRegistrationInvite(CreateRegistrationInviteRequest) returns (CreateRegistrationInviteResponse);
+  rpc RotateSigningKey(RotateSigningKeyRequest) returns (google.protobuf.Empty);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc BanUser(BanUserRequest) returns (google.protobuf.Empty);
+  rpc UnbanUser(UnbanUserRequest) returns (google.protobuf.Empty);
+}
+
+// RoleService requires human bearer metadata. Authorization is evaluated by
+// shared use cases, including inherited role-admin and both-endpoint mount rules.
+service RoleService {
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (google.protobuf.Empty);
+  rpc UpdateRoleDescription(UpdateRoleDescriptionRequest) returns (google.protobuf.Empty);
+  rpc SetRoleParent(SetRoleParentRequest) returns (google.protobuf.Empty);
+  rpc MountRole(MountRoleRequest) returns (google.protobuf.Empty);
+  rpc UnmountRole(UnmountRoleRequest) returns (google.protobuf.Empty);
+  rpc ListSubgroups(ListSubgroupsRequest) returns (ListSubgroupsResponse);
+  rpc AddRoleTag(AddRoleTagRequest) returns (google.protobuf.Empty);
+  rpc DeleteRoleTag(DeleteRoleTagRequest) returns (google.protobuf.Empty);
+  rpc RenameRoleTag(RenameRoleTagRequest) returns (google.protobuf.Empty);
+  rpc ListUserRoles(ListUserRolesRequest) returns (ListUserRolesResponse);
+  rpc ListRoleMembers(ListRoleMembersRequest) returns (ListRoleMembersResponse);
+  rpc AssignRole(AssignRoleRequest) returns (google.protobuf.Empty);
+  rpc GrantMembershipTag(GrantMembershipTagRequest) returns (google.protobuf.Empty);
+  rpc RevokeMembershipTag(RevokeMembershipTagRequest) returns (google.protobuf.Empty);
+  rpc RemoveRole(RemoveRoleRequest) returns (google.protobuf.Empty);
+  rpc RequestRole(RequestRoleRequest) returns (RequestRoleResponse);
+  rpc ListRoleRequests(ListRoleRequestsRequest) returns (ListRoleRequestsResponse);
+  rpc DecideRoleRequest(DecideRoleRequestRequest) returns (google.protobuf.Empty);
+}

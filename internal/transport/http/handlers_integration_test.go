@@ -17,7 +17,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/config"
-	"github.com/olegkapshai/auth-master/internal/crypto"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"github.com/olegkapshai/auth-master/internal/mail"
 	"github.com/olegkapshai/auth-master/internal/migrate"
@@ -342,13 +341,15 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 	}
 
 	t.Run("roles_rbac_admin", func(t *testing.T) {
+		mutationHeaders := http.Header{}
+		mutationHeaders.Set(cfg.CSRFHeaderName, csrf)
 		r := do(http.MethodGet, "/v1/roles", nil, nil)
 		var rolesOut map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&rolesOut))
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusOK, r.StatusCode)
 
-		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(`{"name":"http-role","description":"d"}`)), nil)
+		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(`{"name":"http-role","description":"d"}`)), mutationHeaders)
 		var roleCreated map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&roleCreated))
 		require.NoError(t, r.Body.Close())
@@ -356,13 +357,13 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		rid := roleCreated["role_id"]
 		require.NotEmpty(t, rid)
 
-		r = do(http.MethodPatch, "/v1/roles/"+rid+"/description", bytes.NewReader([]byte(`{"description":"d2"}`)), nil)
+		r = do(http.MethodPatch, "/v1/roles/"+rid+"/description", bytes.NewReader([]byte(`{"description":"d2"}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
 		// Hierarchy: create a child role, adjust parent, and reject a cycle.
 		childBody := fmt.Sprintf(`{"name":"http-child","description":"c","parent_id":%q}`, rid)
-		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(childBody)), nil)
+		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(childBody)), mutationHeaders)
 		var childCreated map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&childCreated))
 		require.NoError(t, r.Body.Close())
@@ -370,59 +371,57 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		childID := childCreated["role_id"]
 		require.NotEmpty(t, childID)
 
-		r = do(http.MethodPatch, "/v1/roles/"+childID+"/parent", bytes.NewReader([]byte(`{"parent_id":""}`)), nil)
+		r = do(http.MethodPatch, "/v1/roles/"+childID+"/parent", bytes.NewReader([]byte(`{"parent_id":""}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
-		r = do(http.MethodPatch, "/v1/roles/"+childID+"/parent", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, rid))), nil)
+		r = do(http.MethodPatch, "/v1/roles/"+childID+"/parent", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, rid))), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
 		// Add and remove a second mount without replacing the first one.
-		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(`{"name":"http-parent-two","description":"p2"}`)), nil)
+		r = do(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(`{"name":"http-parent-two","description":"p2"}`)), mutationHeaders)
 		var parentTwo map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&parentTwo))
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusCreated, r.StatusCode)
 		parentTwoID := parentTwo["role_id"]
-		r = do(http.MethodPost, "/v1/roles/"+childID+"/mounts", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, parentTwoID))), nil)
+		r = do(http.MethodPost, "/v1/roles/"+childID+"/mounts", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, parentTwoID))), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
-		r = do(http.MethodDelete, "/v1/roles/"+childID+"/mounts/"+parentTwoID, nil, nil)
+		r = do(http.MethodDelete, "/v1/roles/"+childID+"/mounts/"+parentTwoID, nil, mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 		// Mounting an ancestor below its descendant must be rejected as a cycle.
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/mounts", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, childID))), nil)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/mounts", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, childID))), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 
 		r = do(http.MethodGet, "/v1/roles/"+rid+"/subgroups?recursive=true", nil, nil)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusOK, r.StatusCode)
-		tagHeaders := http.Header{}
-		tagHeaders.Set(cfg.CSRFHeaderName, csrf)
 		for _, tag := range []string{"Read", "write"} {
-			r = do(http.MethodPost, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(fmt.Sprintf(`{"tag":%q}`, tag))), tagHeaders)
+			r = do(http.MethodPost, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(fmt.Sprintf(`{"tag":%q}`, tag))), mutationHeaders)
 			require.NoError(t, r.Body.Close())
 			require.Equal(t, http.StatusNoContent, r.StatusCode)
 		}
 		// Regression: bulk replacement is intentionally unsupported because it
 		// can accidentally destroy existing definitions and grants.
-		r = do(http.MethodPut, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"tags":["other"]}`)), tagHeaders)
+		r = do(http.MethodPut, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"tags":["other"]}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusMethodNotAllowed, r.StatusCode)
 
 		// rid under its own child would be a cycle → 400.
-		r = do(http.MethodPatch, "/v1/roles/"+rid+"/parent", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, childID))), nil)
+		r = do(http.MethodPatch, "/v1/roles/"+rid+"/parent", bytes.NewReader([]byte(fmt.Sprintf(`{"parent_id":%q}`, childID))), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 
 		assignBody := fmt.Sprintf(`{"user_id":%q,"level":"member"}`, uid.String())
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(assignBody)), nil)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(assignBody)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 		expiredAssignment := fmt.Sprintf(`{"user_id":%q,"level":"direct_member","valid_until":%q}`, uid.String(), time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(expiredAssignment)), nil)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(expiredAssignment)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 		ridUUID, err := uuid.Parse(rid)
@@ -453,20 +452,20 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		atomicTarget, err := repo.CreateHumanUser(ctx, "atomic-http", "atomic-http@test.dev", "hash")
 		require.NoError(t, err)
 		badAtomicBody := fmt.Sprintf(`{"user_id":%q,"level":"member","tag_grants":["read","missing"]}`, atomicTarget.String())
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(badAtomicBody)), nil)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(badAtomicBody)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 		_, found, err = repo.GetUserRoleLevel(ctx, atomicTarget, ridUUID, time.Now())
 		require.NoError(t, err)
 		require.False(t, found)
 		goodAtomicBody := fmt.Sprintf(`{"user_id":%q,"level":"member","tag_grants":["read"]}`, atomicTarget.String())
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(goodAtomicBody)), nil)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/members", bytes.NewReader([]byte(goodAtomicBody)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
-		r = do(http.MethodDelete, "/v1/roles/"+rid+"/members/"+atomicTarget.String()+"/tags", bytes.NewReader([]byte(`{"tag":"read"}`)), tagHeaders)
+		r = do(http.MethodDelete, "/v1/roles/"+rid+"/members/"+atomicTarget.String()+"/tags", bytes.NewReader([]byte(`{"tag":"read"}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/members/"+uid.String()+"/tags", bytes.NewReader([]byte(`{"tag":"read"}`)), tagHeaders)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/members/"+uid.String()+"/tags", bytes.NewReader([]byte(`{"tag":"read"}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
@@ -492,7 +491,7 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusOK, r.StatusCode)
 		require.True(t, tagged["has_role_with_tag"])
-		r = do(http.MethodPatch, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"old_tag":"read","new_tag":"view"}`)), tagHeaders)
+		r = do(http.MethodPatch, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"old_tag":"read","new_tag":"view"}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 		r = do(http.MethodGet, "/v1/me/has-role-with-tag?role_name=http-child&tag=read", nil, nil)
@@ -503,10 +502,10 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&tagged))
 		require.NoError(t, r.Body.Close())
 		require.True(t, tagged["has_role_with_tag"])
-		r = do(http.MethodDelete, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"tag":"view"}`)), tagHeaders)
+		r = do(http.MethodDelete, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"tag":"view"}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"tag":"view"}`)), tagHeaders)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/tags", bytes.NewReader([]byte(`{"tag":"view"}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
@@ -518,7 +517,7 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, err)
 		// httpuser is a superuser (manager) → the request is auto-granted, no approval.
 		reqBody := fmt.Sprintf(`{"target_user_id":%q}`, peerID.String())
-		r = do(http.MethodPost, "/v1/roles/"+rid+"/requests", bytes.NewReader([]byte(reqBody)), nil)
+		r = do(http.MethodPost, "/v1/roles/"+rid+"/requests", bytes.NewReader([]byte(reqBody)), mutationHeaders)
 		var reqOut map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqOut))
 		require.NoError(t, r.Body.Close())
@@ -533,18 +532,18 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusOK, r.StatusCode)
 
-		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":true}`)), nil)
+		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":true}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
-		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":false}`)), nil)
+		r = do(http.MethodPost, "/v1/role-requests/"+pendingID.String()+"/decide", bytes.NewReader([]byte(`{"approve":false}`)), mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 
-		r = do(http.MethodDelete, "/v1/roles/"+rid+"/members/"+uid.String(), nil, nil)
+		r = do(http.MethodDelete, "/v1/roles/"+rid+"/members/"+uid.String(), nil, mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 
-		r = do(http.MethodDelete, "/v1/roles/"+childID, nil, nil)
+		r = do(http.MethodDelete, "/v1/roles/"+childID, nil, mutationHeaders)
 		require.NoError(t, r.Body.Close())
 		require.Equal(t, http.StatusNoContent, r.StatusCode)
 	})
@@ -770,12 +769,25 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, superUser.BannedAt)
 
-		sh, err := crypto.HashSecret("svc-plain")
+		r = do(http.MethodPost, "/v1/admin/service-accounts", bytes.NewReader([]byte(`{"login":"svc-http","secret":"HTTP-Service1!","superuser":true}`)), h)
+		var createdService map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&createdService))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusCreated, r.StatusCode)
+		serviceID, err := uuid.Parse(createdService["user_id"])
 		require.NoError(t, err)
-		_, err = repo.CreateServiceUser(ctx, "svc-http", sh)
+		serviceAccount, err := repo.GetUserByID(ctx, serviceID)
 		require.NoError(t, err)
+		require.Equal(t, domain.UserService, serviceAccount.Kind)
+		require.True(t, serviceAccount.Superuser)
+		require.NotNil(t, serviceAccount.ServiceSecretHash)
+		require.NotEqual(t, "HTTP-Service1!", *serviceAccount.ServiceSecretHash)
+
+		r = do(http.MethodPost, "/v1/admin/service-accounts", bytes.NewReader([]byte(`{"login":"weak-service","secret":"weak"}`)), h)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusBadRequest, r.StatusCode)
 		r, err = client.Post(base+"/v1/auth/service-token", "application/json",
-			strings.NewReader(`{"login":"svc-http","secret":"svc-plain"}`))
+			strings.NewReader(`{"login":"svc-http","secret":"HTTP-Service1!"}`))
 		require.NoError(t, err)
 		var svcTok map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&svcTok))
@@ -783,6 +795,32 @@ func TestIntegration_HTTPMajorRoutes(t *testing.T) {
 		require.Equal(t, http.StatusOK, r.StatusCode)
 		sat, _ := svcTok["access_token"].(string)
 		require.NotEmpty(t, sat)
+		serviceDo := func(method, path string, body io.Reader) *http.Response {
+			req, requestErr := http.NewRequest(method, base+path, body)
+			require.NoError(t, requestErr)
+			req.Header.Set("Authorization", "Bearer "+sat)
+			if body != nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			response, requestErr := client.Do(req)
+			require.NoError(t, requestErr)
+			return response
+		}
+
+		// Admin and Role accept service actors and still apply service-layer
+		// superuser checks. Service credentials do not use browser CSRF state.
+		r = serviceDo(http.MethodPost, "/v1/roles", bytes.NewReader([]byte(`{"name":"http-service-created-role"}`)))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusCreated, r.StatusCode)
+		r = serviceDo(http.MethodPost, "/v1/admin/service-accounts", bytes.NewReader([]byte(`{"login":"svc-http-worker","secret":"HTTP-Worker1!"}`)))
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusCreated, r.StatusCode)
+		r = serviceDo(http.MethodGet, "/v1/me", nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode)
+		r = serviceDo(http.MethodGet, "/v1/sessions", nil)
+		require.NoError(t, r.Body.Close())
+		require.Equal(t, http.StatusUnauthorized, r.StatusCode)
 
 		// Cross-service role checks authorize a human access token, never a
 		// service token, even though token introspection accepts both kinds.

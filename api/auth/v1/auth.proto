@@ -156,6 +156,8 @@ message RevokeSessionWithOTPRequest { string session_id = 1; string code = 2; }
 // must fit Go's time.Duration; invalid values fail with INVALID_ARGUMENT.
 message CreateRegistrationInviteRequest { optional string email = 1; bool superuser = 2; google.protobuf.Duration ttl = 3; }
 message CreateRegistrationInviteResponse { string token = 1; google.protobuf.Timestamp expires_at = 2; string registration_url = 3; }
+message CreateServiceAccountRequest { string login = 1; string secret = 2; bool superuser = 3; }
+message CreateServiceAccountResponse { string user_id = 1; }
 message RotateSigningKeyRequest {}
 message ListUsersRequest { PageRequest page = 1; }
 // total is present only on the first page (a request without cursor).
@@ -246,18 +248,21 @@ service SessionService {
   rpc RevokeSessionWithOTP(RevokeSessionWithOTPRequest) returns (google.protobuf.Empty);
 }
 
-// AdminService requires human bearer metadata; individual RPCs additionally
-// enforce superuser authorization and return canonical gRPC status codes.
+// AdminService accepts human access or service bearer metadata; individual
+// RPCs additionally enforce superuser authorization and return canonical gRPC
+// status codes.
 service AdminService {
   rpc CreateRegistrationInvite(CreateRegistrationInviteRequest) returns (CreateRegistrationInviteResponse);
+  rpc CreateServiceAccount(CreateServiceAccountRequest) returns (CreateServiceAccountResponse);
   rpc RotateSigningKey(RotateSigningKeyRequest) returns (google.protobuf.Empty);
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   rpc BanUser(BanUserRequest) returns (google.protobuf.Empty);
   rpc UnbanUser(UnbanUserRequest) returns (google.protobuf.Empty);
 }
 
-// RoleService requires human bearer metadata. Authorization is evaluated by
-// shared use cases, including inherited role-admin and both-endpoint mount rules.
+// RoleService accepts human access or service bearer metadata. Authorization is
+// evaluated by shared use cases, including inherited role-admin and both-endpoint
+// mount rules.
 service RoleService {
   rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
   rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);

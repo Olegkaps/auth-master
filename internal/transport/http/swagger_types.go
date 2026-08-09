@@ -41,6 +41,19 @@ type CreateRegistrationInviteResponse struct {
 	RegistrationURL string `json:"registration_url"`
 }
 
+// CreateServiceAccountRequest is the body for POST /admin/service-accounts.
+type CreateServiceAccountRequest struct {
+	Login     string `json:"login"`
+	Secret    string `json:"secret"`
+	Superuser bool   `json:"superuser"`
+}
+
+// CreateServiceAccountResponse returns the new principal ID. The raw service
+// secret is deliberately never returned.
+type CreateServiceAccountResponse struct {
+	UserID string `json:"user_id"`
+}
+
 // LoginRequestBody is the body for POST /auth/login.
 type LoginRequestBody struct {
 	Login    string `json:"login"`

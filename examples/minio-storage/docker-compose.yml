@@ -1,0 +1,68 @@
+name: auth-master-minio-storage
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
+    environment: {POSTGRES_USER: auth, POSTGRES_PASSWORD: auth, POSTGRES_DB: auth}
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck: {test: [CMD-SHELL, "pg_isready -U auth -d auth"], interval: 2s, timeout: 2s, retries: 30}
+  mailpit:
+    image: axllent/mailpit:v1.27.2@sha256:22b066bd9b78a2c343eee873da84f7c44ef0a4b989a4ea504e329185092c0e71
+    ports: ["127.0.0.1:${MINIO_MAILPIT_PORT:-8391}:8025"]
+    healthcheck: {test: [CMD-SHELL, "wget -q -O /dev/null 'http://localhost:8025/api/v1/messages?limit=1'"], interval: 2s, timeout: 2s, retries: 30}
+  authd:
+    build: {context: ../.., dockerfile: examples/Authd.Dockerfile}
+    environment:
+      DATABASE_URL: postgres://auth:auth@postgres:5432/auth?sslmode=disable
+      SMTP_HOST: mailpit
+      BOOTSTRAP_SUPERUSER_LOGIN: admin
+      BOOTSTRAP_SUPERUSER_EMAIL: admin@example.test
+      BOOTSTRAP_SUPERUSER_PASSWORD: Adm1n!Passw0rd123
+      BOOTSTRAP_SUPERUSER_SERVICE_LOGIN: example-seeder
+      BOOTSTRAP_SUPERUSER_SERVICE_SECRET: Example-Seeder!Secret9
+      REGISTRATION_INVITE_BASE_URL: http://127.0.0.1:${MINIO_STORAGE_PORT:-8191}
+    depends_on: {postgres: {condition: service_healthy}, mailpit: {condition: service_healthy}}
+    ports: ["127.0.0.1:${MINIO_AUTH_PORT:-8291}:8080"]
+    healthcheck: {test: [CMD, /healthcheck, http://localhost:8080/healthz], interval: 2s, timeout: 3s, retries: 30}
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data
+    environment: {MINIO_ROOT_USER: storage-example, MINIO_ROOT_PASSWORD: storage-example-secret}
+    tmpfs: [/data]
+    healthcheck: {test: [CMD, mc, ready, local], interval: 2s, timeout: 2s, retries: 30}
+  integration:
+    profiles: [integration]
+    build: {context: ../.., dockerfile: examples/Dockerfile, target: test, args: {EXAMPLE: minio-storage}}
+    command: [./minio-storage, -run, ^TestIntegrationMinIOPersistenceAndPrefixIsolation$$, -count=1]
+    environment:
+      MINIO_INTEGRATION_ENDPOINT: minio:9000
+      MINIO_INTEGRATION_ACCESS_KEY: storage-example
+      MINIO_INTEGRATION_SECRET_KEY: storage-example-secret
+    depends_on: {minio: {condition: service_healthy}}
+  app:
+    build: {context: ../.., dockerfile: examples/Dockerfile, args: {EXAMPLE: minio-storage}}
+    environment:
+      AUTH_GRPC_ADDR: authd:9090
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: storage-example
+      MINIO_SECRET_KEY: storage-example-secret
+      PUBLIC_URL: http://127.0.0.1:${MINIO_STORAGE_PORT:-8191}
+      HTTP_ADDR: :8091
+      AUTH_SERVICE_LOGIN: example-seeder
+      AUTH_SERVICE_SECRET: Example-Seeder!Secret9
+    ports: ["127.0.0.1:${MINIO_STORAGE_PORT:-8191}:8091"]
+    depends_on: {authd: {condition: service_healthy}, minio: {condition: service_healthy}}
+    healthcheck: {test: [CMD, /healthcheck, http://localhost:8091/healthz], interval: 2s, timeout: 3s, retries: 30}
+  seed:
+    profiles: [seed]
+    build: {context: ../.., dockerfile: examples/Dockerfile, target: demo-tools, args: {EXAMPLE: minio-storage}}
+    command: [seed]
+    environment:
+      EXAMPLE: minio-storage
+      AUTH_HTTP_URL: http://authd:8080
+      AUTH_GRPC_ADDR: authd:9090
+      MAILPIT_URL: http://mailpit:8025
+      APP_URL: http://app:8091
+      PUBLIC_APP_URL: http://127.0.0.1:${MINIO_STORAGE_PORT:-8191}
+      AUTH_SERVICE_LOGIN: example-seeder
+      AUTH_SERVICE_SECRET: Example-Seeder!Secret9
+    depends_on: {authd: {condition: service_healthy}, mailpit: {condition: service_healthy}, app: {condition: service_healthy}}

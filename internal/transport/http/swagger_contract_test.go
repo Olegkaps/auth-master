@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/olegkapshai/auth-master/internal/transport/parity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,31 +21,31 @@ func TestGeneratedSwaggerDocumentsCSRFErrorsAndNullableFields(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &spec))
 	paths := spec["paths"].(map[string]any)
 
-	assertOperation := func(path, method string, failures []string) {
+	assertConditionalActorCSRF := func(path, method string) {
 		t.Helper()
 		operation := paths[path].(map[string]any)[method].(map[string]any)
 		parameters := operation["parameters"].([]any)
-		foundCSRF := false
+		var csrfHeader map[string]any
 		for _, item := range parameters {
 			parameter := item.(map[string]any)
-			if parameter["name"] == "X-CSRF-Token" && parameter["in"] == "header" && parameter["required"] == true {
-				foundCSRF = true
+			if parameter["name"] == "X-CSRF-Token" && parameter["in"] == "header" {
+				csrfHeader = parameter
+				break
 			}
 		}
-		require.True(t, foundCSRF, "%s %s must document its required double-submit header", method, path)
+		require.NotNil(t, csrfHeader, "%s %s must document its conditional double-submit header", method, path)
+		require.NotEqual(t, true, csrfHeader["required"], "%s %s must allow verified service actors to omit CSRF", method, path)
+		description, _ := csrfHeader["description"].(string)
+		require.Contains(t, description, "Required for human access tokens", "%s %s must document the human-token CSRF requirement", method, path)
+		require.Contains(t, description, "omitted for verified service tokens", "%s %s must document the service-token exception", method, path)
 		responses := operation["responses"].(map[string]any)
-		for _, status := range failures {
-			require.Contains(t, responses, status, "%s %s must document HTTP %s", method, path, status)
-		}
+		require.Contains(t, responses, "403", "%s %s must document HTTP 403", method, path)
 	}
 
-	assertOperation("/v1/admin/users/{userID}/ban", "post", []string{"400", "401", "403", "404", "500"})
-	assertOperation("/v1/admin/users/{userID}/ban", "delete", []string{"400", "401", "403", "404", "500"})
-	for _, method := range []string{"post", "delete", "patch"} {
-		assertOperation("/v1/roles/{roleID}/tags", method, []string{"400", "401", "403"})
-	}
-	for _, method := range []string{"post", "delete"} {
-		assertOperation("/v1/roles/{roleID}/members/{userID}/tags", method, []string{"400", "401", "403"})
+	for _, route := range parity.BusinessRoutes {
+		if route.Auth == parity.AuthActor && route.CSRF {
+			assertConditionalActorCSRF(route.HTTPPath, strings.ToLower(route.HTTPMethod))
+		}
 	}
 
 	refresh := paths["/v1/auth/refresh"].(map[string]any)["post"].(map[string]any)

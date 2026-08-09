@@ -82,33 +82,36 @@ func NewServer(cfg *config.Config, auth *service.Auth, repo repository.Repositor
 			r.Delete("/sessions/{sessionID}", s.handleSessionDelete)
 			r.Post("/sessions/revoke-otp", s.handleSessionRevokeOTP)
 			r.Post("/sessions/{sessionID}/revoke", s.handleSessionRevoke)
+		})
 
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireActorJWT)
 			r.With(s.csrf).Post("/admin/registration-invites", s.handleCreateRegistrationInvite)
+			r.With(s.csrf).Post("/admin/service-accounts", s.handleCreateServiceAccount)
 			r.With(s.csrf).Post("/admin/signing-keys/rotate", s.handleRotateSigningKey)
 			r.Get("/admin/users", s.handleListUsers)
 			r.With(s.csrf).Post("/admin/users/{userID}/ban", s.handleBanUser)
 			r.With(s.csrf).Delete("/admin/users/{userID}/ban", s.handleUnbanUser)
-
 			r.Get("/roles", s.handleListRoles)
-			r.Post("/roles", s.handleCreateRole)
-			r.Delete("/roles/{roleID}", s.handleDeleteRole)
-			r.Patch("/roles/{roleID}/description", s.handlePatchRole)
-			r.Patch("/roles/{roleID}/parent", s.handleSetRoleParent)
-			r.Post("/roles/{roleID}/mounts", s.handleMountRole)
-			r.Delete("/roles/{roleID}/mounts/{parentID}", s.handleUnmountRole)
+			r.With(s.csrf).Post("/roles", s.handleCreateRole)
+			r.With(s.csrf).Delete("/roles/{roleID}", s.handleDeleteRole)
+			r.With(s.csrf).Patch("/roles/{roleID}/description", s.handlePatchRole)
+			r.With(s.csrf).Patch("/roles/{roleID}/parent", s.handleSetRoleParent)
+			r.With(s.csrf).Post("/roles/{roleID}/mounts", s.handleMountRole)
+			r.With(s.csrf).Delete("/roles/{roleID}/mounts/{parentID}", s.handleUnmountRole)
 			r.Get("/roles/{roleID}/subgroups", s.handleListSubgroups)
 			r.With(s.csrf).Post("/roles/{roleID}/tags", s.handleAddRoleTag)
 			r.With(s.csrf).Delete("/roles/{roleID}/tags", s.handleDeleteRoleTag)
 			r.With(s.csrf).Patch("/roles/{roleID}/tags", s.handleRenameRoleTag)
 			r.Get("/users/{userID}/roles", s.handleUserRoles)
 			r.Get("/roles/{roleID}/members", s.handleListRoleMembers)
-			r.Post("/roles/{roleID}/members", s.handleAssignRole)
+			r.With(s.csrf).Post("/roles/{roleID}/members", s.handleAssignRole)
 			r.With(s.csrf).Post("/roles/{roleID}/members/{userID}/tags", s.handleAddUserRoleTag)
 			r.With(s.csrf).Delete("/roles/{roleID}/members/{userID}/tags", s.handleDeleteUserRoleTag)
-			r.Delete("/roles/{roleID}/members/{userID}", s.handleRemoveRole)
-			r.Post("/roles/{roleID}/requests", s.handleRoleRequest)
+			r.With(s.csrf).Delete("/roles/{roleID}/members/{userID}", s.handleRemoveRole)
+			r.With(s.csrf).Post("/roles/{roleID}/requests", s.handleRoleRequest)
 			r.Get("/roles/{roleID}/requests", s.handleListRoleRequests)
-			r.Post("/role-requests/{requestID}/decide", s.handleDecideRoleRequest)
+			r.With(s.csrf).Post("/role-requests/{requestID}/decide", s.handleDecideRoleRequest)
 		})
 	})
 
@@ -152,6 +155,13 @@ func (s *Server) csrfOK(r *http.Request) bool {
 
 func (s *Server) csrf(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Service tokens are explicit Authorization credentials and are never
+		// ambient browser cookies, so the browser-oriented CSRF check does not
+		// apply to a service actor.
+		if isServiceActor(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !s.csrfOK(r) {
 			s.writeErr(w, http.StatusForbidden, "csrf validation failed")
 			return
@@ -189,7 +199,35 @@ func (s *Server) requireAccessJWT(next http.Handler) http.Handler {
 			s.writeErr(w, http.StatusUnauthorized, "account banned")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(WithUserID(r.Context(), uid)))
+		next.ServeHTTP(w, r.WithContext(withActor(r.Context(), uid, false)))
+	})
+}
+
+func (s *Server) requireActorJWT(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(h, prefix) {
+			s.writeErr(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		token := strings.TrimSpace(h[len(prefix):])
+		claims, err := s.auth.VerifyAccessOrServiceToken(r.Context(), token)
+		if err != nil {
+			if errors.Is(err, service.ErrStaleSigningKey) {
+				w.Header().Set("X-Token-Stale", "1")
+				s.writeErr(w, http.StatusUnauthorized, "token stale, refresh required")
+				return
+			}
+			s.writeErr(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		uid, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			s.writeErr(w, http.StatusUnauthorized, "invalid subject")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(withActor(r.Context(), uid, claims.Typ == jwtutil.TypeService)))
 	})
 }
 

@@ -83,11 +83,11 @@ func TestIntegration_MigrateDBRestoresTokenVersionWithoutDataLoss(t *testing.T) 
 
 	activeHumanID, err := store.CreateHumanUser(ctx, "legacy-active-human", "legacy-active-human@test.dev", "hash")
 	require.NoError(t, err)
-	activeServiceID, err := store.CreateServiceUser(ctx, "legacy-active-service", "hash")
+	activeServiceID, err := store.CreateServiceUser(ctx, "legacy-active-service", "hash", false)
 	require.NoError(t, err)
 	bannedHumanID, err := store.CreateHumanUser(ctx, "legacy-banned-human", "legacy-banned-human@test.dev", "hash")
 	require.NoError(t, err)
-	bannedServiceID, err := store.CreateServiceUser(ctx, "legacy-banned-service", "hash")
+	bannedServiceID, err := store.CreateServiceUser(ctx, "legacy-banned-service", "hash", false)
 	require.NoError(t, err)
 
 	activeHash := []byte("preserved-active-refresh-session")

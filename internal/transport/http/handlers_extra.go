@@ -232,7 +232,7 @@ func (s *Server) handleVerifyAccessTokenOnly(w http.ResponseWriter, r *http.Requ
 // @Summary Rotate signing key
 // @Tags admin
 // @Security BearerAuth
-// @Param X-CSRF-Token header string true "Must match csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 403 {object} ErrEnvelope
 // @Failure 500 {object} ErrEnvelope
@@ -329,7 +329,7 @@ type banUserBody struct {
 // @Tags admin
 // @Security BearerAuth
 // @Param userID path string true "User UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body BanUserRequest true "Reason"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
@@ -468,7 +468,7 @@ func (s *Server) handleTokenRoleCheck(w http.ResponseWriter, r *http.Request, wi
 // @Tags admin
 // @Security BearerAuth
 // @Param userID path string true "User UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
 // @Failure 401 {object} ErrEnvelope

@@ -128,7 +128,7 @@ func (s *Server) authenticate(ctx context.Context, method string, reflectionEnab
 	if policy == parity.AuthPublic {
 		return ctx, nil
 	}
-	if policy != parity.AuthHuman {
+	if policy != parity.AuthHuman && policy != parity.AuthActor {
 		return nil, grpcError(codes.PermissionDenied, "RPC_DENIED", "rpc is not classified")
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -147,7 +147,13 @@ func (s *Server) authenticate(ctx context.Context, method string, reflectionEnab
 	if token == "" || token != strings.TrimSpace(token) || strings.ContainsAny(token, " \t\r\n") {
 		return nil, grpcError(codes.Unauthenticated, "INVALID_BEARER", "bearer token is empty or malformed")
 	}
-	claims, err := s.auth.VerifyAccessToken(ctx, token, jwtutil.TypeAccess)
+	var claims *jwtutil.Claims
+	var err error
+	if policy == parity.AuthHuman {
+		claims, err = s.auth.VerifyAccessToken(ctx, token, jwtutil.TypeAccess)
+	} else {
+		claims, err = s.auth.VerifyAccessOrServiceToken(ctx, token)
+	}
 	if err != nil {
 		return nil, mapError(err)
 	}

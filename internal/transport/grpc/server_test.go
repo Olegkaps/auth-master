@@ -32,15 +32,15 @@ func TestAllApplicationRPCsAreUnaryAndClassified(t *testing.T) {
 			fullMethod := "/" + string(serviceDescriptor.FullName()) + "/" + string(method.Name())
 			policy, classified := parity.RPCPolicies[fullMethod]
 			require.Truef(t, classified, "unclassified method %s", fullMethod)
-			require.Contains(t, []parity.AuthPolicy{parity.AuthPublic, parity.AuthHuman}, policy)
+			require.Contains(t, []parity.AuthPolicy{parity.AuthPublic, parity.AuthHuman, parity.AuthActor}, policy)
 			total++
 		}
 	}
-	require.Equal(t, 54, total)
+	require.Equal(t, 55, total)
 	require.Len(t, parity.RPCPolicies, total)
 }
 
-func TestAuthInterceptorDefaultsToDenyAndRequiresHumanBearer(t *testing.T) {
+func TestAuthInterceptorDefaultsToDenyAndRequiresClassifiedBearer(t *testing.T) {
 	server := &Server{}
 	called := false
 	handler := func(context.Context, any) (any, error) { called = true; return struct{}{}, nil }
@@ -59,6 +59,13 @@ func TestAuthInterceptorDefaultsToDenyAndRequiresHumanBearer(t *testing.T) {
 	_, err = server.authInterceptor(false)(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: authv1.IdentityService_GetMe_FullMethodName}, handler)
 	require.Equal(t, codes.Unauthenticated, status.Code(err))
 	require.False(t, called)
+}
+
+func TestIdentityAndSessionStayHumanWhileAdminAndRoleAcceptActors(t *testing.T) {
+	require.Equal(t, parity.AuthHuman, parity.RPCPolicies[authv1.IdentityService_GetMe_FullMethodName])
+	require.Equal(t, parity.AuthHuman, parity.RPCPolicies[authv1.SessionService_ListSessions_FullMethodName])
+	require.Equal(t, parity.AuthActor, parity.RPCPolicies[authv1.AdminService_CreateServiceAccount_FullMethodName])
+	require.Equal(t, parity.AuthActor, parity.RPCPolicies[authv1.RoleService_CreateRole_FullMethodName])
 }
 
 func TestAuthInterceptorRejectsMalformedBearerMetadata(t *testing.T) {

@@ -80,10 +80,8 @@ proto-tools: ## Install pinned protobuf generation and lint tools locally
 	GOBIN='$(PROTO_TOOLS_DIR)' go install github.com/bufbuild/buf/cmd/buf@$(BUF_VER)
 
 proto: proto-tools proto-lint ## Regenerate committed protobuf and gRPC Go files
-	PATH='$(PROTO_TOOLS_DIR)':$$PATH protoc -I . \
-		--go_out=paths=source_relative:. \
-		--go-grpc_out=paths=source_relative,require_unimplemented_servers=false:. \
-		api/auth/v1/auth.proto
+	PATH='$(PROTO_TOOLS_DIR)':$$PATH '$(PROTO_TOOLS_DIR)/buf' generate \
+		--path api/auth/v1/auth.proto
 
 proto-lint: proto-tools proto-breaking ## Lint protobuf contracts and reject v1 breaking changes
 	'$(PROTO_TOOLS_DIR)/buf' lint
@@ -96,10 +94,8 @@ proto-baseline-update: proto-tools ## Deliberately advance the reviewed protobuf
 
 proto-check: proto-tools proto-lint proto-breaking ## Fail on breaking changes or committed protobuf Go drift
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-	PATH='$(PROTO_TOOLS_DIR)':$$PATH protoc -I . \
-		--go_out=paths=source_relative:"$$tmp" \
-		--go-grpc_out=paths=source_relative,require_unimplemented_servers=false:"$$tmp" \
-		api/auth/v1/auth.proto; \
+	PATH='$(PROTO_TOOLS_DIR)':$$PATH '$(PROTO_TOOLS_DIR)/buf' generate \
+		--path api/auth/v1/auth.proto --output "$$tmp"; \
 	cmp api/auth/v1/auth.pb.go "$$tmp/api/auth/v1/auth.pb.go"; \
 	cmp api/auth/v1/auth_grpc.pb.go "$$tmp/api/auth/v1/auth_grpc.pb.go"
 

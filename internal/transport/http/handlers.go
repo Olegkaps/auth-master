@@ -93,7 +93,7 @@ type createInviteBody struct {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
-// @Param X-CSRF-Token header string true "Must match csrf_token cookie (set after login)"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body CreateRegistrationInviteRequest true "Optional locked email and TTL"
 // @Success 201 {object} CreateRegistrationInviteResponse
 // @Failure 400 {object} ErrEnvelope
@@ -130,6 +130,51 @@ func (s *Server) handleCreateRegistrationInvite(w http.ResponseWriter, r *http.R
 		"expires_at":       exp.UTC().Format(time.RFC3339),
 		"registration_url": regURL,
 	})
+}
+
+type createServiceAccountBody struct {
+	Login     string `json:"login"`
+	Secret    string `json:"secret"`
+	Superuser bool   `json:"superuser"`
+}
+
+// handleCreateServiceAccount creates a service principal and returns its ID.
+// The raw secret is accepted only in this request and is never returned.
+// @Summary Create service account
+// @Tags admin
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
+// @Param body body CreateServiceAccountRequest true "Service account credentials and privilege"
+// @Success 201 {object} CreateServiceAccountResponse
+// @Failure 400 {object} ErrEnvelope
+// @Failure 401 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
+// @Failure 500 {object} ErrEnvelope
+// @Router /v1/admin/service-accounts [post]
+func (s *Server) handleCreateServiceAccount(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserID(r.Context())
+	var body createServiceAccountBody
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		s.writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	id, err := s.auth.CreateServiceAccount(r.Context(), actor, body.Login, body.Secret, body.Superuser)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden), errors.Is(err, service.ErrBanned):
+			s.writeErr(w, http.StatusForbidden, "superuser only")
+		case errors.Is(err, service.ErrInvalidArgument), errors.Is(err, service.ErrPasswordPolicy):
+			s.writeErr(w, http.StatusBadRequest, err.Error())
+		default:
+			s.writeErr(w, http.StatusInternalServerError, "service account creation failed")
+		}
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, map[string]string{"user_id": id.String()})
 }
 
 type loginBody struct {
@@ -770,6 +815,7 @@ func normalizeRoleName(name string) (string, error) {
 // @Accept json
 // @Produce json
 // @Param body body CreateRoleRequestBody true "Role name, description and optional parent_id"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 201 {object} CreateRoleResponse
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -820,6 +866,7 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 // @Tags roles
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -856,6 +903,7 @@ type setParentBody struct {
 // @Produce json
 // @Param roleID path string true "Role UUID"
 // @Param body body SetRoleParentRequest true "Parent role UUID or empty to clear"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope "Bad id or cycle"
 // @Failure 403 {object} ErrEnvelope
@@ -901,6 +949,7 @@ func (s *Server) handleSetRoleParent(w http.ResponseWriter, r *http.Request) {
 // @Accept json
 // @Param roleID path string true "Role UUID"
 // @Param body body MountRoleRequest true "Parent role UUID"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -939,6 +988,7 @@ func (s *Server) handleMountRole(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
 // @Param parentID path string true "Parent role UUID"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -1024,7 +1074,7 @@ func normalizeRoleTagRename(oldTag, newTag string) (string, string, error) {
 // @Tags roles
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body RoleTagPairRequest true "Tag pair"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
@@ -1040,7 +1090,7 @@ func (s *Server) handleAddRoleTag(w http.ResponseWriter, r *http.Request) {
 // @Tags roles
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body RoleTagPairRequest true "Tag pair"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
@@ -1055,7 +1105,7 @@ func (s *Server) handleDeleteRoleTag(w http.ResponseWriter, r *http.Request) {
 // @Tags roles
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body RenameRoleTagRequest true "Old and new tag names"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
@@ -1177,6 +1227,7 @@ type patchRoleBody struct {
 // @Produce json
 // @Param roleID path string true "Role UUID"
 // @Param body body PatchRoleRequestBody true "New description"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -1250,6 +1301,7 @@ type assignBody struct {
 // @Produce json
 // @Param roleID path string true "Role UUID"
 // @Param body body AssignRoleRequestBody true "Target user and level (member or role_admin)"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -1297,7 +1349,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
 // @Param userID path string true "User UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body RoleTagPairRequest true "Tag"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
@@ -1313,7 +1365,7 @@ func (s *Server) handleAddUserRoleTag(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
 // @Param userID path string true "User UUID"
-// @Param X-CSRF-Token header string true "CSRF token matching the csrf_token cookie"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Param body body RoleTagPairRequest true "Tag"
 // @Success 204
 // @Failure 400 {object} ErrEnvelope
@@ -1374,6 +1426,7 @@ func (s *Server) handleUserRoleTagPair(w http.ResponseWriter, r *http.Request, a
 // @Security BearerAuth
 // @Param roleID path string true "Role UUID"
 // @Param userID path string true "User UUID"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope
@@ -1414,8 +1467,10 @@ type reqRoleBody struct {
 // @Produce json
 // @Param roleID path string true "Role UUID"
 // @Param body body RoleRequestCreateBody false "Optional target user (defaults to caller)"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 201 {object} RoleRequestCreateResponse
 // @Failure 400 {object} ErrEnvelope
+// @Failure 403 {object} ErrEnvelope
 // @Router /v1/roles/{roleID}/requests [post]
 func (s *Server) handleRoleRequest(w http.ResponseWriter, r *http.Request) {
 	actor, _ := UserID(r.Context())
@@ -1496,6 +1551,7 @@ type decideBody struct {
 // @Produce json
 // @Param requestID path string true "Request UUID"
 // @Param body body DecideRoleRequestBody true "Approve or reject"
+// @Param X-CSRF-Token header string false "Required for human access tokens; omitted for verified service tokens"
 // @Success 204 "No content"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 403 {object} ErrEnvelope

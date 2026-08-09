@@ -229,6 +229,18 @@ func (s *Server) CreateRegistrationInvite(ctx context.Context, req *authv1.Creat
 	return &authv1.CreateRegistrationInviteResponse{Token: token, ExpiresAt: pbTimestamp(expiresAt), RegistrationUrl: url}, nil
 }
 
+func (s *Server) CreateServiceAccount(ctx context.Context, req *authv1.CreateServiceAccountRequest) (*authv1.CreateServiceAccountResponse, error) {
+	actor, err := actorFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id, err := s.auth.CreateServiceAccount(ctx, actor, req.GetLogin(), req.GetSecret(), req.GetSuperuser())
+	if err != nil {
+		return nil, err
+	}
+	return &authv1.CreateServiceAccountResponse{UserId: id.String()}, nil
+}
+
 func (s *Server) RotateSigningKey(ctx context.Context, _ *authv1.RotateSigningKeyRequest) (*emptypb.Empty, error) {
 	actor, err := actorFromContext(ctx)
 	if err != nil {

@@ -83,6 +83,9 @@ func run(cfg config.Config, log *slog.Logger) error {
 	if err := authSvc.EnsureBootstrapAdmin(ctx); err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
+	if err := authSvc.EnsureBootstrapSuperuserService(ctx); err != nil {
+		return fmt.Errorf("bootstrap superuser service: %w", err)
+	}
 
 	rotateCtx, stopRotation := context.WithCancel(context.Background())
 	defer stopRotation()

@@ -3,13 +3,62 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/olegkapshai/auth-master/internal/crypto"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"github.com/olegkapshai/auth-master/internal/repository"
 )
+
+const (
+	maxServiceAccountLoginBytes = 255
+	maxServiceSecretBytes       = 1024
+)
+
+// validateServiceAccountCredentials is shared by the runtime admin API and
+// bootstrap setup so both paths enforce one credential contract.
+func validateServiceAccountCredentials(login, secret string) (string, error) {
+	login = normalizeLogin(login)
+	if login == "" {
+		return "", fmt.Errorf("%w: service account login is required", ErrInvalidArgument)
+	}
+	if len(login) > maxServiceAccountLoginBytes {
+		return "", fmt.Errorf("%w: service account login is too long", ErrInvalidArgument)
+	}
+	if len(secret) > maxServiceSecretBytes {
+		return "", fmt.Errorf("%w: service secret is too long", ErrInvalidArgument)
+	}
+	if err := checkPasswordComplexity(secret); err != nil {
+		detail := strings.TrimPrefix(err.Error(), ErrPasswordPolicy.Error()+": ")
+		return "", fmt.Errorf("%w: %s", ErrPasswordPolicy, strings.ReplaceAll(detail, "password", "service secret"))
+	}
+	return login, nil
+}
+
+// CreateServiceAccount creates a non-human principal whose service token may
+// call AdminService and RoleService. Only an active superuser actor may create
+// one; the raw secret is hashed before the atomic persistence operation.
+func (a *Auth) CreateServiceAccount(ctx context.Context, actor uuid.UUID, login, secret string, superuser bool) (uuid.UUID, error) {
+	ok, err := a.IsSuperuser(ctx, actor)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if !ok {
+		return uuid.Nil, ErrForbidden
+	}
+	login, err = validateServiceAccountCredentials(login, secret)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	secretHash, err := crypto.HashSecret(secret)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return a.repo.CreateServiceUser(ctx, login, secretHash, superuser)
+}
 
 // The methods in this file are transport-neutral use cases. HTTP and gRPC
 // adapters should only validate wire values and convert their results.

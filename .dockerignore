@@ -2,6 +2,10 @@
 .github
 web/node_modules
 web/dist
+examples/node_modules
+examples/test-results
+examples/playwright-report
+.tools
 *.out
 coverage.out
 .env

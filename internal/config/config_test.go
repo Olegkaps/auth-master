@@ -98,3 +98,33 @@ func TestLoadRejectsNonPositiveMaxSessionsPerUser(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRequiresBootstrapServiceCredentialPair(t *testing.T) {
+	t.Run("login only", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_SUPERUSER_SERVICE_LOGIN", "demo-seeder")
+		t.Setenv("BOOTSTRAP_SUPERUSER_SERVICE_SECRET", "")
+		_, err := Load()
+		if err == nil || err.Error() != "BOOTSTRAP_SUPERUSER_SERVICE_LOGIN and BOOTSTRAP_SUPERUSER_SERVICE_SECRET must be set together" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("secret only", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_SUPERUSER_SERVICE_LOGIN", "")
+		t.Setenv("BOOTSTRAP_SUPERUSER_SERVICE_SECRET", "Demo-Service-Secret1!")
+		_, err := Load()
+		if err == nil || err.Error() != "BOOTSTRAP_SUPERUSER_SERVICE_LOGIN and BOOTSTRAP_SUPERUSER_SERVICE_SECRET must be set together" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("pair", func(t *testing.T) {
+		t.Setenv("BOOTSTRAP_SUPERUSER_SERVICE_LOGIN", "demo-seeder")
+		t.Setenv("BOOTSTRAP_SUPERUSER_SERVICE_SECRET", "Demo-Service-Secret1!")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.BootstrapSuperuserServiceLogin != "demo-seeder" || cfg.BootstrapSuperuserServiceSecret == "" {
+			t.Fatalf("unexpected bootstrap service config: %+v", cfg)
+		}
+	})
+}

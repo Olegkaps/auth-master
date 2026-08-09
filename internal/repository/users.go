@@ -27,11 +27,12 @@ func (s *Store) CreateHumanUser(ctx context.Context, login, email, passwordHash 
 	return u.ID, nil
 }
 
-func (s *Store) CreateServiceUser(ctx context.Context, login, secretHash string) (uuid.UUID, error) {
+func (s *Store) CreateServiceUser(ctx context.Context, login, secretHash string, superuser bool) (uuid.UUID, error) {
 	u := userModel{
 		Login:             login,
 		Kind:              "service",
 		ServiceSecretHash: &secretHash,
+		Superuser:         superuser,
 	}
 	if err := s.db.WithContext(ctx).Create(&u).Error; err != nil {
 		return uuid.Nil, err

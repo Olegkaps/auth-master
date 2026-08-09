@@ -107,3 +107,17 @@ Superusers cannot be banned. Cross-service authorization uses the public POST
 `/v1/auth/has-role` and `/v1/auth/has-role-with-tag` endpoints with a human
 access token in the JSON body; derive the subject from the verified token and
 never accept a caller-supplied user ID.
+
+Service accounts are created only through the explicit superuser-only
+`CreateServiceAccount` business operation. Hash secrets and persist the service
+kind plus `superuser` flag atomically. Admin and Role transports accept a
+verified human access JWT or service JWT as the actor; Identity and Session stay
+human-only, and unknown RPCs remain default-deny. On HTTP mutations, bypass CSRF
+only after verifying a bearer as a service JWT; never treat the presence of an
+Authorization header as a bypass.
+
+`BOOTSTRAP_SUPERUSER_SERVICE_LOGIN` and
+`BOOTSTRAP_SUPERUSER_SERVICE_SECRET` are an idempotent demo-automation pair.
+An existing account is accepted only when it is the same active superuser
+service and its hash matches the configured secret. Never replace, return, or
+log that credential.

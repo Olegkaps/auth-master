@@ -55,7 +55,7 @@ func TestIntegration_LegacyBannedTokensCannotResurrectAfterMigrationAndUnban(t *
 	require.NoError(t, err)
 	humanID, err := repo.CreateHumanUser(ctx, "legacy-token-banned-human", "legacy-token-banned-human@test.dev", "hash")
 	require.NoError(t, err)
-	serviceID, err := repo.CreateServiceUser(ctx, "legacy-token-banned-service", "hash")
+	serviceID, err := repo.CreateServiceUser(ctx, "legacy-token-banned-service", "hash", false)
 	require.NoError(t, err)
 	activeToken := signLegacyTokenWithoutVersion(t, secret, kid, activeID, "legacy-token-active", jwtutil.TypeAccess)
 	humanToken := signLegacyTokenWithoutVersion(t, secret, kid, humanID, "legacy-token-banned-human", jwtutil.TypeAccess)

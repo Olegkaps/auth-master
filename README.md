@@ -8,7 +8,8 @@ framework-free TypeScript SPA.
 ## Requirements
 
 - Go 1.25 or newer
-- Protocol Buffers compiler (`protoc`) for `make proto` and `make proto-check`
+- No system protobuf compiler is required; `make install` installs pinned Buf
+  and Go protobuf plugins under `.tools/bin`
 - Podman or Docker with Compose
 - Node.js 20 or newer
 - GNU Make
@@ -25,9 +26,13 @@ The production SPA and API gateway are available at `http://localhost:8080`, Swa
 `http://localhost:8080/swagger/`, gRPC at `localhost:9090`, and Mailpit at
 `http://localhost:8025`.
 
+Runnable integrations for MinIO storage, an HTTP deployment API, and a gRPC
+support desk are indexed in [`examples/`](examples/README.md). Build all three
+with `make -C examples test`.
+
 ## gRPC for backend consumers
 
-The checked-in `api/auth/v1/auth.proto` contract exposes all 54 business
+The checked-in `api/auth/v1/auth.proto` contract exposes all 55 business
 operations as five unary services: `AuthService`, `IdentityService`,
 `SessionService`, `AdminService`, and `RoleService`. Health uses standard
 `grpc.health.v1.Health`. HTTP health, metrics, and Swagger routes remain
@@ -87,13 +92,24 @@ may be `0444`. The certificate SANs must cover every client name in use, usually
 `localhost` for host clients and `authd` for clients in the Compose network.
 Configure the client's TLS server name to match the selected SAN.
 
-Identity, Session, Admin, and Role RPCs require a human access JWT in
-`authorization` metadata. The actor comes only from verified JWT `sub`; request
-messages never accept an actor ID. Service JWTs are valid for issuance and
-`InspectToken` but are rejected by human and RBAC RPCs. `CheckTokenRole` and
-`CheckTokenRoleWithTag` are intentionally different: put the end user's human
-token in the `access_token` message field, not metadata. The service evaluates
-that token's subject without trusting a caller-supplied user ID.
+Identity and Session RPCs require a human access JWT in `authorization`
+metadata. Admin and Role RPCs accept either a human access JWT or a service JWT;
+their service-layer authorization rules still require the verified subject to
+hold the necessary superuser or role-administrator authority. The actor comes
+only from verified JWT `sub`; request messages never accept an actor ID.
+`CheckTokenRole` and `CheckTokenRoleWithTag` are intentionally different: put
+the end user's human token in the `access_token` message field, not metadata.
+Those body-token checks remain human-only and never trust a caller-supplied user
+ID.
+
+A superuser can create an automation identity with `POST
+/v1/admin/service-accounts` or `AdminService.CreateServiceAccount`. The request
+contains `login`, `secret`, and `superuser`; the raw secret is bounded,
+complexity-checked, Argon2-hashed, and never returned. Use `POST
+/v1/auth/service-token` or `AuthService.IssueServiceToken` to mint a short-lived
+service JWT. A valid service bearer skips browser CSRF only after its signature
+and token type are verified; human cookie/browser mutations retain CSRF
+protection.
 
 Banning a user increments that account's token version and revokes every
 refresh session immediately. Existing REST and gRPC bearer tokens therefore
@@ -176,9 +192,20 @@ existing developer file.
 - Refresh tokens rotate and are scoped to a stable browser device identifier.
 - Signing keys can rotate; clients transparently refresh stale access tokens.
 - State-changing cookie-authenticated requests use CSRF protection.
+- Identity and session operations stay human-only. Short-lived service JWTs
+  are actor credentials only for Admin and Role operations.
 
 All configuration variables and defaults are documented in `.env.example` and
 `internal/config/config.go`.
+
+For trusted local automation, set both
+`BOOTSTRAP_SUPERUSER_SERVICE_LOGIN` and
+`BOOTSTRAP_SUPERUSER_SERVICE_SECRET`. Startup atomically creates a superuser
+service when absent. If the normalized login already belongs to a human,
+ordinary service, banned service, or a service with a different secret, authd
+fails loudly instead of replacing credentials. Secrets are never logged. In
+production, provision scoped service identities through the explicit API rather
+than sharing this demo bootstrap identity.
 
 ## Multi-parent role mounting
 

@@ -69,7 +69,7 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 	require.NoError(t, err)
 	serviceHash, err := crypto.HashSecret("Service-Secret1!")
 	require.NoError(t, err)
-	_, err = repo.CreateServiceUser(ctx, "grpc-service", serviceHash)
+	_, err = repo.CreateServiceUser(ctx, "grpc-service", serviceHash, false)
 	require.NoError(t, err)
 
 	grpcServer, healthServer := New(auth, repo, logger, Options{})
@@ -145,6 +145,31 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 	require.Equal(t, "service", inspected.GetClaims().GetTokenType())
 	_, err = authClient.CheckTokenRole(ctx, &authv1.CheckTokenRoleRequest{AccessToken: serviceToken.GetAccessToken(), RoleName: "grpc-role"})
 	require.Equal(t, codes.Unauthenticated, status.Code(err))
+	_, err = roleClient.ListRoles(serviceCtx, &authv1.ListRolesRequest{})
+	require.NoError(t, err, "RoleService accepts an authenticated service actor")
+	_, err = roleClient.CreateRole(serviceCtx, &authv1.CreateRoleRequest{Name: "non-super-service-denied"})
+	require.Equal(t, codes.PermissionDenied, status.Code(err), "service authentication must not bypass service-layer authorization")
+
+	createdService, err := adminClient.CreateServiceAccount(humanCtx, &authv1.CreateServiceAccountRequest{
+		Login: "grpc-super-service", Secret: "GRPC-Service1!", Superuser: true,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, createdService.GetUserId())
+	superServiceToken, err := authClient.IssueServiceToken(ctx, &authv1.IssueServiceTokenRequest{Login: "grpc-super-service", Secret: "GRPC-Service1!"})
+	require.NoError(t, err)
+	superServiceCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+superServiceToken.GetAccessToken())
+	serviceCreatedRole, err := roleClient.CreateRole(superServiceCtx, &authv1.CreateRoleRequest{Name: "grpc-service-created-role"})
+	require.NoError(t, err)
+	require.NotEmpty(t, serviceCreatedRole.GetRoleId())
+	createdByService, err := adminClient.CreateServiceAccount(superServiceCtx, &authv1.CreateServiceAccountRequest{
+		Login: "grpc-worker-service", Secret: "GRPC-Worker1!",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, createdByService.GetUserId())
+	_, err = identityClient.GetMe(superServiceCtx, &authv1.GetMeRequest{})
+	require.Equal(t, codes.Unauthenticated, status.Code(err), "IdentityService remains human-only")
+	_, err = sessionClient.ListSessions(superServiceCtx, &authv1.ListSessionsRequest{})
+	require.Equal(t, codes.Unauthenticated, status.Code(err), "SessionService remains human-only")
 
 	_, err = authClient.Refresh(ctx, &authv1.RefreshRequest{RefreshToken: login.GetTokens().GetRefreshToken(), DeviceId: "grpc-device"})
 	require.NoError(t, err)

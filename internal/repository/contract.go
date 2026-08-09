@@ -16,7 +16,7 @@ type Repository interface {
 
 	CreateHumanUser(ctx context.Context, login, email, passwordHash string) (uuid.UUID, error)
 	RegisterHumanWithInvite(ctx context.Context, tokenHash []byte, login, email, passwordHash string, historyCipher, historyNonce []byte, historyKeep int) (uuid.UUID, bool, error)
-	CreateServiceUser(ctx context.Context, login, secretHash string) (uuid.UUID, error)
+	CreateServiceUser(ctx context.Context, login, secretHash string, superuser bool) (uuid.UUID, error)
 	GetUserByLogin(ctx context.Context, login string) (*domain.User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 	SetLockedUntil(ctx context.Context, userID uuid.UUID, t *time.Time) error

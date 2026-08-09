@@ -48,6 +48,10 @@ type Config struct {
 	BootstrapSuperuserLogin    string `env:"BOOTSTRAP_SUPERUSER_LOGIN" env-default:""`
 	BootstrapSuperuserEmail    string `env:"BOOTSTRAP_SUPERUSER_EMAIL" env-default:""`
 	BootstrapSuperuserPassword string `env:"BOOTSTRAP_SUPERUSER_PASSWORD" env-default:""`
+	// Optional service identity used by demo automation. Both values must be set
+	// together; authd validates an existing account instead of silently replacing it.
+	BootstrapSuperuserServiceLogin  string `env:"BOOTSTRAP_SUPERUSER_SERVICE_LOGIN" env-default:""`
+	BootstrapSuperuserServiceSecret string `env:"BOOTSTRAP_SUPERUSER_SERVICE_SECRET" env-default:""`
 	// AES-256: 32 raw bytes as base64 or hex (see internal/crypto/keys.go). Defaults suit local dev only.
 	PasswordHistoryEncryptionKey string `env:"PASSWORD_HISTORY_ENCRYPTION_KEY" env-default:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"`
 	SigningKeyMasterKey          string `env:"SIGNING_KEY_MASTER_KEY" env-default:"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"`
@@ -75,6 +79,11 @@ func Load() (Config, error) {
 	}
 	if c.MaxSessionsPerUser <= 0 {
 		return Config{}, errors.New("MAX_SESSIONS_PER_USER must be positive")
+	}
+	serviceLoginSet := strings.TrimSpace(c.BootstrapSuperuserServiceLogin) != ""
+	serviceSecretSet := c.BootstrapSuperuserServiceSecret != ""
+	if serviceLoginSet != serviceSecretSet {
+		return Config{}, errors.New("BOOTSTRAP_SUPERUSER_SERVICE_LOGIN and BOOTSTRAP_SUPERUSER_SERVICE_SECRET must be set together")
 	}
 	return c, nil
 }

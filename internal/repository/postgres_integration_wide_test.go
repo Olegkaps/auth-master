@@ -19,7 +19,7 @@ func TestIntegration_RepoSurface(t *testing.T) {
 
 	humanID, err := s.CreateHumanUser(ctx, "surf", "surf@test.dev", "ph")
 	require.NoError(t, err)
-	svcID, err := s.CreateServiceUser(ctx, "svc1", "secrethash")
+	svcID, err := s.CreateServiceUser(ctx, "svc1", "secrethash", false)
 	require.NoError(t, err)
 
 	u, err := s.GetUserByID(ctx, humanID)

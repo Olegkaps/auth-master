@@ -15,7 +15,7 @@ import (
 )
 
 func TestHTTPAndGRPCParityManifest(t *testing.T) {
-	require.Len(t, parity.BusinessRoutes, 54)
+	require.Len(t, parity.BusinessRoutes, 55)
 	require.Len(t, parity.TransportOnlyRoutes, 3)
 
 	router := NewServer(&config.Config{}, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
@@ -49,10 +49,11 @@ func TestHTTPAndGRPCParityManifest(t *testing.T) {
 			rpcs["/"+string(service.FullName())+"/"+string(method.Name())]++
 		}
 	}
-	require.Len(t, rpcs, 54)
+	require.Len(t, rpcs, 55)
 	csrf := 0
 	public := 0
 	human := 0
+	actor := 0
 	manifestRPCs := map[string]bool{}
 	for _, route := range parity.BusinessRoutes {
 		require.Equalf(t, 1, rpcs[route.RPC], "RPC must exist exactly once: %s", route.RPC)
@@ -64,6 +65,8 @@ func TestHTTPAndGRPCParityManifest(t *testing.T) {
 			public++
 		case parity.AuthHuman:
 			human++
+		case parity.AuthActor:
+			actor++
 		default:
 			t.Fatalf("unclassified RPC %s", route.RPC)
 		}
@@ -71,9 +74,10 @@ func TestHTTPAndGRPCParityManifest(t *testing.T) {
 			csrf++
 		}
 	}
-	require.Equal(t, 10, csrf)
+	require.Equal(t, 21, csrf)
 	require.Equal(t, 16, public)
-	require.Equal(t, 38, human)
+	require.Equal(t, 13, human)
+	require.Equal(t, 26, actor)
 	require.Equal(t, rpcs, func() map[string]int {
 		out := make(map[string]int, len(manifestRPCs))
 		for rpc := range manifestRPCs {

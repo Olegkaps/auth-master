@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/config"
+	"github.com/olegkapshai/auth-master/internal/crypto"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"github.com/olegkapshai/auth-master/internal/mail"
 	"github.com/olegkapshai/auth-master/internal/migrate"
@@ -89,4 +90,37 @@ func TestIntegration_RegisterAndPasswordPolicy(t *testing.T) {
 	require.NoError(t, err)
 	err = changePwd2FA(t, a, repo, ctx, id, "Password-Two2!", "Password-Two2!")
 	require.Error(t, err)
+}
+
+func TestIntegration_CreateServiceAccountPersistsHashedAtomicPrincipal(t *testing.T) {
+	repo, done := testDB(t)
+	defer done()
+	ctx := context.Background()
+	a, err := NewAuth(testConfig(), repo, &mail.Sender{}, nil)
+	require.NoError(t, err)
+
+	adminID, err := repo.CreateHumanUser(ctx, "service-admin", "service-admin@test.dev", "hash")
+	require.NoError(t, err)
+	require.NoError(t, repo.SetSuperuser(ctx, adminID, true))
+	id, err := a.CreateServiceAccount(ctx, adminID, "  Storage-Agent  ", "Storage-Service1!", true)
+	require.NoError(t, err)
+	account, err := repo.GetUserByID(ctx, id)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	require.Equal(t, "storage-agent", account.Login)
+	require.Equal(t, domain.UserService, account.Kind)
+	require.True(t, account.Superuser)
+	require.NotNil(t, account.ServiceSecretHash)
+	require.NotEqual(t, "Storage-Service1!", *account.ServiceSecretHash)
+	valid, err := crypto.VerifySecret("Storage-Service1!", *account.ServiceSecretHash)
+	require.NoError(t, err)
+	require.True(t, valid)
+
+	nonAdminID, err := repo.CreateHumanUser(ctx, "service-non-admin", "service-non-admin@test.dev", "hash")
+	require.NoError(t, err)
+	_, err = a.CreateServiceAccount(ctx, nonAdminID, "forbidden-service", "Storage-Service2!", false)
+	require.ErrorIs(t, err, ErrForbidden)
+	missing, err := repo.GetUserByLogin(ctx, "forbidden-service")
+	require.NoError(t, err)
+	require.Nil(t, missing)
 }

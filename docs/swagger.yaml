@@ -104,6 +104,20 @@ definitions:
       role_id:
         type: string
     type: object
+  httptransport.CreateServiceAccountRequest:
+    properties:
+      login:
+        type: string
+      secret:
+        type: string
+      superuser:
+        type: boolean
+    type: object
+  httptransport.CreateServiceAccountResponse:
+    properties:
+      user_id:
+        type: string
+    type: object
   httptransport.DecideRoleRequestBody:
     properties:
       approve:
@@ -563,10 +577,10 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: Must match csrf_token cookie (set after login)
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Optional locked email and TTL
         in: body
@@ -598,13 +612,57 @@ paths:
       summary: Create registration invite
       tags:
       - admin
+  /v1/admin/service-accounts:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
+      - description: Service account credentials and privilege
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/httptransport.CreateServiceAccountRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/httptransport.CreateServiceAccountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+      security:
+      - BearerAuth: []
+      summary: Create service account
+      tags:
+      - admin
   /v1/admin/signing-keys/rotate:
     post:
       parameters:
-      - description: Must match csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       responses:
         "204":
@@ -665,10 +723,10 @@ paths:
         name: userID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       responses:
         "204":
@@ -705,10 +763,10 @@ paths:
         name: userID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Reason
         in: body
@@ -1493,6 +1551,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/httptransport.DecideRoleRequestBody'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       produces:
       - application/json
       responses:
@@ -1560,6 +1623,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/httptransport.CreateRoleRequestBody'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       produces:
       - application/json
       responses:
@@ -1587,6 +1655,11 @@ paths:
         in: path
         name: roleID
         required: true
+        type: string
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
         type: string
       responses:
         "204":
@@ -1624,6 +1697,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/httptransport.PatchRoleRequestBody'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       produces:
       - application/json
       responses:
@@ -1695,6 +1773,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/httptransport.AssignRoleRequestBody'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       produces:
       - application/json
       responses:
@@ -1725,6 +1808,11 @@ paths:
         in: path
         name: userID
         required: true
+        type: string
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
         type: string
       responses:
         "204":
@@ -1759,10 +1847,10 @@ paths:
         name: userID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Tag
         in: body
@@ -1802,10 +1890,10 @@ paths:
         name: userID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Tag
         in: body
@@ -1851,6 +1939,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/httptransport.MountRoleRequest'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       responses:
         "204":
           description: No content
@@ -1879,6 +1972,11 @@ paths:
         in: path
         name: parentID
         required: true
+        type: string
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
         type: string
       responses:
         "204":
@@ -1914,6 +2012,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/httptransport.SetRoleParentRequest'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       produces:
       - application/json
       responses:
@@ -1982,6 +2085,11 @@ paths:
         name: body
         schema:
           $ref: '#/definitions/httptransport.RoleRequestCreateBody'
+      - description: Required for human access tokens; omitted for verified service
+          tokens
+        in: header
+        name: X-CSRF-Token
+        type: string
       produces:
       - application/json
       responses:
@@ -1991,6 +2099,10 @@ paths:
             $ref: '#/definitions/httptransport.RoleRequestCreateResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/httptransport.ErrEnvelope'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/httptransport.ErrEnvelope'
       security:
@@ -2030,10 +2142,10 @@ paths:
         name: roleID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Tag pair
         in: body
@@ -2068,10 +2180,10 @@ paths:
         name: roleID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Old and new tag names
         in: body
@@ -2106,10 +2218,10 @@ paths:
         name: roleID
         required: true
         type: string
-      - description: CSRF token matching the csrf_token cookie
+      - description: Required for human access tokens; omitted for verified service
+          tokens
         in: header
         name: X-CSRF-Token
-        required: true
         type: string
       - description: Tag pair
         in: body

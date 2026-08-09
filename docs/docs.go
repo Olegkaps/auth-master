@@ -69,10 +69,9 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Must match csrf_token cookie (set after login)",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Optional locked email and TTL",
@@ -112,6 +111,74 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/admin/service-accounts": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Create service account",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
+                    },
+                    {
+                        "description": "Service account credentials and privilege",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.CreateServiceAccountRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.CreateServiceAccountResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/admin/signing-keys/rotate": {
             "post": {
                 "security": [
@@ -126,10 +193,9 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Must match csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -228,10 +294,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Reason",
@@ -299,10 +364,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1503,6 +1567,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.DecideRoleRequestBody"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1610,6 +1680,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.CreateRoleRequestBody"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1652,6 +1728,12 @@ const docTemplate = `{
                         "name": "roleID",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1712,6 +1794,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.PatchRoleRequestBody"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1822,6 +1910,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.AssignRoleRequestBody"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1868,6 +1962,12 @@ const docTemplate = `{
                         "name": "userID",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1923,10 +2023,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Tag",
@@ -1989,10 +2088,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Tag",
@@ -2060,6 +2158,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.MountRoleRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -2106,6 +2210,12 @@ const docTemplate = `{
                         "name": "parentID",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -2161,6 +2271,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.SetRoleParentRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -2269,6 +2385,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/httptransport.RoleRequestCreateBody"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
+                        "name": "X-CSRF-Token",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -2280,6 +2402,12 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/httptransport.ErrEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/httptransport.ErrEnvelope"
                         }
@@ -2344,10 +2472,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Tag pair",
@@ -2404,10 +2531,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Tag pair",
@@ -2463,10 +2589,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "CSRF token matching the csrf_token cookie",
+                        "description": "Required for human access tokens; omitted for verified service tokens",
                         "name": "X-CSRF-Token",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "description": "Old and new tag names",
@@ -2859,6 +2984,28 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "role_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "httptransport.CreateServiceAccountRequest": {
+            "type": "object",
+            "properties": {
+                "login": {
+                    "type": "string"
+                },
+                "secret": {
+                    "type": "string"
+                },
+                "superuser": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "httptransport.CreateServiceAccountResponse": {
+            "type": "object",
+            "properties": {
+                "user_id": {
                     "type": "string"
                 }
             }

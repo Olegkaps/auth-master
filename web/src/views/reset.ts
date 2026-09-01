@@ -24,7 +24,7 @@ export function resetView(params: URLSearchParams): HTMLElement {
       // regardless and let the code step reveal whether it was valid.
       const r = await run(api.passwordResetStart(l))
       if (!r) return
-      toast('If the account exists, a code was sent (check Mailpit at :8025).', 'info')
+		  toast('If the account exists, a reset code was requested. If it does not arrive, wait briefly and resend the code.', 'info')
       step2(l)
     })
     login.addEventListener('keydown', (e) => e.key === 'Enter' && submit.click())
@@ -46,13 +46,18 @@ export function resetView(params: URLSearchParams): HTMLElement {
       navigate('/login')
     })
     pw.addEventListener('keydown', (e) => e.key === 'Enter' && submit.click())
-    box.append(
-      h('h3', { class: 'panel-title' }, 'Choose a new password'),
-      h('p', { class: 'muted small' }, `Resetting the password for ${login}.`),
-      field('Reset code', code),
-      field('New password', pw),
-      submit,
-      button('← Use a different login', () => step1(login), 'ghost'),
+		box.append(
+		  h('h3', { class: 'panel-title' }, 'Choose a new password'),
+			h('p', { class: 'muted small' }, `Resetting the password for ${login}.`),
+			h('p', { class: 'muted small' }, 'If the code is invalid or expired, request another. If password policy rejects the password, strengthen it and retry the same unexpired code.'),
+	      field('Reset code', code),
+	      field('New password', pw),
+	      submit,
+	      button('Resend code', async () => {
+	        const r = await run(api.passwordResetStart(login))
+	        if (r) toast('If the account exists, another reset code was requested.', 'info')
+	      }, 'ghost'),
+	      button('← Use a different login', () => step1(login), 'ghost'),
     )
     code.focus()
   }

@@ -20,7 +20,7 @@ export function magicView(params: URLSearchParams): HTMLElement {
       const r = await api.magicLinkVerify(token, deviceId)
       await completeSignIn(r, deviceId)
       toast('Signed in via login link.', 'ok')
-      navigate('/')
+		navigate('/')
     } catch (e) {
       showError(box, e instanceof Error ? e.message : 'Link is invalid or expired.')
     }

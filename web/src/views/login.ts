@@ -71,13 +71,13 @@ export function loginView(params?: URLSearchParams): HTMLElement {
         return
       }
       await run(api.magicLinkStart(l))
-      toast('If the account exists, a one-time login link was sent (Mailpit at :8025).', 'info')
+	  toast('If the account exists, a sign-in link was requested. If it does not arrive, wait briefly and request another link.', 'info')
     }, 'ghost')
     login.addEventListener('keydown', (e) => e.key === 'Enter' && password.focus())
     password.addEventListener('keydown', (e) => e.key === 'Enter' && submit.click())
     box.append(
       h('h3', { class: 'panel-title' }, 'Sign in'),
-      h('p', { class: 'muted small' }, 'Password step. An email OTP is sent on success.'),
+	  h('p', { class: 'muted small', 'data-testid': 'login-alternatives' }, 'Use your password plus an email code, or request an email login link. Both sign-in methods are equal; no password is required for magic links.'),
       field('Login', login),
       field('Password', password),
       submit,

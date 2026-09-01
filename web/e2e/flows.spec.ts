@@ -4,8 +4,10 @@ import { ADMIN, clearMail, nav, signIn, submitLogin, uniqueSuffix, waitForMagicT
 test('passwordless login via one-time email link', async ({ page }) => {
   await clearMail()
   await page.goto('/#/login')
+	await expect(page.getByTestId('login-alternatives')).toContainText('no password is required')
   await page.getByTestId('login-input').fill(ADMIN.login)
   await page.getByTestId('magic-link-btn').click()
+	await expect(page.getByText('If the account exists, a sign-in link was requested. If it does not arrive, wait briefly and request another link.')).toBeVisible()
   const token = await waitForMagicToken(ADMIN.email)
   await page.goto(`/#/magic?token=${encodeURIComponent(token)}`)
   await expect(page.getByTestId('dashboard')).toBeVisible()
@@ -150,6 +152,7 @@ test('forgot-password reset flow works end to end', async ({ page, browser }) =>
   await up.goto('/#/reset')
   await up.locator('.input').first().fill(login)
   await up.getByRole('button', { name: /email me a code/i }).click()
+	await expect(up.getByText('If the account exists, a reset code was requested. If it does not arrive, wait briefly and resend the code.')).toBeVisible()
   const firstCode = await waitForOtp(email, 'reset')
   await up.getByRole('button', { name: /set new password/i }).waitFor()
   let inputs = up.locator('.input')

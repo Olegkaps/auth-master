@@ -3,6 +3,8 @@ package httptransport
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -286,6 +288,21 @@ type magicStartBody struct {
 	Login string `json:"login"`
 }
 
+const publicMailStartBodyMaxBytes int64 = 1024
+
+func decodePublicMailStart(w http.ResponseWriter, r *http.Request, dst any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, publicMailStartBodyMaxBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("request body must contain one JSON value")
+	}
+	return nil
+}
+
 // handleMagicLinkStart emails a one-time passwordless login link.
 // @Summary Request a magic login link
 // @Description Public passwordless flow. Always returns 200 to avoid enumeration; a link is emailed only when the login exists and has an email.
@@ -299,15 +316,15 @@ type magicStartBody struct {
 // @Router /v1/auth/login/magic-link [post]
 func (s *Server) handleMagicLinkStart(w http.ResponseWriter, r *http.Request) {
 	var b magicStartBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+	if err := decodePublicMailStart(w, r, &b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if strings.TrimSpace(b.Login) == "" {
-		s.writeErr(w, http.StatusBadRequest, "login required")
-		return
-	}
 	if err := s.auth.StartMagicLink(r.Context(), b.Login); err != nil {
+		if errors.Is(err, service.ErrInvalidArgument) {
+			s.writeErr(w, http.StatusBadRequest, "invalid login")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -593,15 +610,15 @@ type resetStartBody struct {
 // @Router /v1/auth/password/reset/start [post]
 func (s *Server) handlePasswordResetStart(w http.ResponseWriter, r *http.Request) {
 	var b resetStartBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+	if err := decodePublicMailStart(w, r, &b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if strings.TrimSpace(b.Login) == "" {
-		s.writeErr(w, http.StatusBadRequest, "login required")
-		return
-	}
 	if err := s.auth.StartPasswordReset(r.Context(), b.Login); err != nil {
+		if errors.Is(err, service.ErrInvalidArgument) {
+			s.writeErr(w, http.StatusBadRequest, "invalid login")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

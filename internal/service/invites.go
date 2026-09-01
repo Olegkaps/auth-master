@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -59,7 +57,9 @@ func (a *Auth) CreateRegistrationInvite(ctx context.Context, adminID uuid.UUID, 
 	if err != nil {
 		return "", time.Time{}, "", err
 	}
-	base := strings.TrimRight(a.cfg.RegistrationInviteBaseURL, "/")
-	registrationURL = fmt.Sprintf("%s/#/register?token=%s", base, url.QueryEscape(token))
+	registrationURL, err = oneTimeCallbackURL(a.cfg.RegistrationInviteCallbackURL, strings.TrimRight(a.cfg.RegistrationInviteBaseURL, "/")+"/#/register", token)
+	if err != nil {
+		return "", time.Time{}, "", err
+	}
 	return token, expiresAt, registrationURL, nil
 }

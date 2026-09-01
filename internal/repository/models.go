@@ -154,6 +154,7 @@ type emailOTPModel struct {
 	CodeHash      []byte    `gorm:"not null"`
 	ExpiresAt     time.Time `gorm:"not null"`
 	ConsumedAt    *time.Time
+	DeliveryState string  `gorm:"not null;default:active"`
 	AttemptCount  int     `gorm:"not null;default:0"`
 	CorrelationID *string `gorm:"index"`
 	CreatedAt     time.Time

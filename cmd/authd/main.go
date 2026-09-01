@@ -71,12 +71,21 @@ func run(cfg config.Config, log *slog.Logger) error {
 	m := &mail.Sender{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 		User: cfg.SMTPUser, Password: cfg.SMTPPassword,
-		From: cfg.MailFrom,
+		From: cfg.MailFrom, Timeout: cfg.SMTPTimeout,
 	}
 	authSvc, err := service.NewAuth(&cfg, repo, m, log)
 	if err != nil {
 		return fmt.Errorf("auth service: %w", err)
 	}
+	serviceShutdown := false
+	defer func() {
+		if serviceShutdown {
+			return
+		}
+		fallbackCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		_ = authSvc.Shutdown(fallbackCtx)
+	}()
 	if err := authSvc.EnsureBootstrap(ctx); err != nil {
 		return fmt.Errorf("signing bootstrap: %w", err)
 	}
@@ -164,6 +173,10 @@ func run(cfg config.Config, log *slog.Logger) error {
 		grpcServer.Stop()
 	}
 	if err := <-httpDone; err != nil && !errors.Is(err, context.Canceled) && serveErr == nil {
+		serveErr = err
+	}
+	serviceShutdown = true
+	if err := authSvc.Shutdown(shctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && serveErr == nil {
 		serveErr = err
 	}
 	return serveErr

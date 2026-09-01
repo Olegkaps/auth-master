@@ -175,6 +175,7 @@ func TestIntegration_PasswordResetThrottleAndAttemptCap(t *testing.T) {
 	otpID, err := repo.CreateEmailOTP(ctx, userID, domain.OTPPasswordReset, auth.IntegrationOTPHash(code), time.Now().Add(time.Hour), nil)
 	require.NoError(t, err)
 	require.NoError(t, auth.StartPasswordReset(ctx, "reset-limited"))
+	require.NoError(t, auth.Shutdown(ctx), "drain the private delivery worker before inspecting throttling")
 	latest, err := repo.GetMostRecentOTP(ctx, userID, domain.OTPPasswordReset)
 	require.NoError(t, err)
 	require.Equal(t, otpID, latest.ID, "a throttled request must not mint or email another OTP")

@@ -40,10 +40,16 @@ type Config struct {
 	SMTPPort              int           `env:"SMTP_PORT" env-default:"1025"`
 	SMTPUser              string        `env:"SMTP_USER" env-default:""`
 	SMTPPassword          string        `env:"SMTP_PASSWORD" env-default:""`
+	SMTPTimeout           time.Duration `env:"SMTP_TIMEOUT" env-default:"5s"`
+	PublicMailWorkers     int           `env:"PUBLIC_MAIL_WORKERS" env-default:"2"`
+	PublicMailQueueSize   int           `env:"PUBLIC_MAIL_QUEUE_SIZE" env-default:"64"`
+	PublicMailJobTimeout  time.Duration `env:"PUBLIC_MAIL_JOB_TIMEOUT" env-default:"10s"`
 	MailFrom              string        `env:"MAIL_FROM" env-default:"auth@localhost"`
 	AppPublicURL          string        `env:"APP_PUBLIC_URL" env-default:"http://localhost:8080"`
 	// Base URL for one-time registration links shown to admins (usually the SPA origin).
-	RegistrationInviteBaseURL string `env:"REGISTRATION_INVITE_BASE_URL" env-default:"http://localhost:5173"`
+	RegistrationInviteBaseURL     string `env:"REGISTRATION_INVITE_BASE_URL" env-default:"http://localhost:5173"`
+	RegistrationInviteCallbackURL string `env:"REGISTRATION_INVITE_CALLBACK_URL" env-default:""`
+	MagicLinkCallbackURL          string `env:"MAGIC_LINK_CALLBACK_URL" env-default:""`
 	// First start: if no human users exist, create this superuser (leave empty to disable).
 	BootstrapSuperuserLogin    string `env:"BOOTSTRAP_SUPERUSER_LOGIN" env-default:""`
 	BootstrapSuperuserEmail    string `env:"BOOTSTRAP_SUPERUSER_EMAIL" env-default:""`
@@ -68,6 +74,9 @@ func Load() (Config, error) {
 	if err := cleanenv.ReadEnv(&c); err != nil {
 		return Config{}, err
 	}
+	if err := applyFileEnvironment(&c); err != nil {
+		return Config{}, err
+	}
 	if (strings.TrimSpace(c.GRPCTLSCertFile) == "") != (strings.TrimSpace(c.GRPCTLSKeyFile) == "") {
 		return Config{}, errors.New("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set together")
 	}
@@ -76,6 +85,18 @@ func Load() (Config, error) {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return Config{}, errors.New("SHUTDOWN_TIMEOUT must be positive")
+	}
+	if c.SMTPTimeout <= 0 {
+		return Config{}, errors.New("SMTP_TIMEOUT must be positive")
+	}
+	if c.PublicMailWorkers <= 0 {
+		return Config{}, errors.New("PUBLIC_MAIL_WORKERS must be positive")
+	}
+	if c.PublicMailQueueSize <= 0 {
+		return Config{}, errors.New("PUBLIC_MAIL_QUEUE_SIZE must be positive")
+	}
+	if c.PublicMailJobTimeout <= 0 {
+		return Config{}, errors.New("PUBLIC_MAIL_JOB_TIMEOUT must be positive")
 	}
 	if c.MaxSessionsPerUser <= 0 {
 		return Config{}, errors.New("MAX_SESSIONS_PER_USER must be positive")

@@ -14,9 +14,24 @@ import (
 )
 
 const (
-	maxServiceAccountLoginBytes = 255
+	// MaxPublicIdentityBytes bounds public login/email selectors before they can
+	// enter the asynchronous mail queue. Keep this aligned with the persisted
+	// human/service identity namespace.
+	MaxPublicIdentityBytes      = 255
+	maxServiceAccountLoginBytes = MaxPublicIdentityBytes
 	maxServiceSecretBytes       = 1024
 )
+
+func normalizePublicIdentity(identity string) (string, error) {
+	identity = normalizeLogin(identity)
+	if identity == "" {
+		return "", fmt.Errorf("%w: login is required", ErrInvalidArgument)
+	}
+	if len(identity) > MaxPublicIdentityBytes {
+		return "", fmt.Errorf("%w: login is too long", ErrInvalidArgument)
+	}
+	return identity, nil
+}
 
 // validateServiceAccountCredentials is shared by the runtime admin API and
 // bootstrap setup so both paths enforce one credential contract.
@@ -75,6 +90,12 @@ func (a *Auth) CurrentUser(ctx context.Context, actor uuid.UUID) (*domain.User, 
 }
 
 func (a *Auth) EffectiveRoleAccess(ctx context.Context, actor uuid.UUID) ([]repository.EffectiveRoleAccess, error) {
+	if banned, err := a.IsBanned(ctx, actor); err != nil || banned {
+		if banned {
+			return nil, ErrBanned
+		}
+		return nil, err
+	}
 	return a.repo.ListEffectiveRoleAccess(ctx, actor, time.Now())
 }
 

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 )
 
 func (s *Store) CreateHumanUser(ctx context.Context, login, email, passwordHash string) (uuid.UUID, error) {
-	em := strings.TrimSpace(email)
+	login = strings.ToLower(strings.TrimSpace(login))
+	em := strings.ToLower(strings.TrimSpace(email))
 	u := userModel{
 		Login:             login,
 		Email:             &em,
@@ -25,6 +27,41 @@ func (s *Store) CreateHumanUser(ctx context.Context, login, email, passwordHash 
 		return uuid.Nil, err
 	}
 	return u.ID, nil
+}
+
+// CreatePasswordlessHuman is intentionally not part of the Repository
+// business interface. Offline migration tools may create this valid account
+// state; password login remains unavailable while magic-link sessions retain
+// the account's normal authorization.
+func (s *Store) CreatePasswordlessHuman(ctx context.Context, login, email string) (uuid.UUID, error) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	em := strings.ToLower(strings.TrimSpace(email))
+	u := userModel{Login: login, Email: &em, Kind: "human", PasswordHash: nil}
+	if err := s.db.WithContext(ctx).Create(&u).Error; err != nil {
+		return uuid.Nil, err
+	}
+	return u.ID, nil
+}
+
+// GetHumanUserByLoginOrEmail resolves the single normalized human identity
+// accepted by interactive login flows. MigrateDB rejects legacy collisions and
+// installs constraints that keep this lookup unambiguous.
+func (s *Store) GetHumanUserByLoginOrEmail(ctx context.Context, identity string) (*domain.User, error) {
+	identity = strings.ToLower(strings.TrimSpace(identity))
+	var rows []userModel
+	err := s.db.WithContext(ctx).
+		Where("kind = 'human' AND (LOWER(BTRIM(login)) = ? OR LOWER(BTRIM(COALESCE(email, ''))) = ?)", identity, identity).
+		Limit(2).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	if len(rows) != 1 {
+		return nil, fmt.Errorf("ambiguous normalized human identity %q", identity)
+	}
+	return rowToUser(&rows[0]), nil
 }
 
 func (s *Store) CreateServiceUser(ctx context.Context, login, secretHash string, superuser bool) (uuid.UUID, error) {

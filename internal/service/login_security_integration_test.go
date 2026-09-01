@@ -79,6 +79,39 @@ func TestIntegration_WrongOTPBurnsChallenge(t *testing.T) {
 	require.NotEmpty(t, tokens.AccessToken)
 }
 
+func TestIntegration_LoginFailureAliasesShareOneLockCounter(t *testing.T) {
+	repo, done := testDB(t)
+	defer done()
+	ctx := context.Background()
+	cfg := testConfig()
+	cfg.LoginFailMax = 3
+	cfg.NotifyOnFailThreshold = 2
+	mailer := &passwordResetMailer{}
+	a, err := NewAuth(cfg, repo, mailer, nil)
+	require.NoError(t, err)
+
+	invite := seedSuperInvite(t, a, repo, ctx)
+	uid, err := a.Register(ctx, invite, "alias-lock", "Alias.Lock@Example.Test", "Alias-Lock-11!")
+	require.NoError(t, err)
+	for _, identity := range []string{"alias-lock", "ALIAS.LOCK@EXAMPLE.TEST", "alias-lock"} {
+		_, err = a.LoginPassword(ctx, identity, "wrong-password", nil)
+		require.ErrorIs(t, err, ErrInvalidCredentials)
+	}
+
+	user, err := repo.GetUserByID(ctx, uid)
+	require.NoError(t, err)
+	require.NotNil(t, user.LockedUntil)
+	count, err := repo.CountFailedLogins(ctx, "alias-lock", time.Now().Add(-time.Minute))
+	require.NoError(t, err)
+	require.EqualValues(t, 3, count)
+	require.Equal(t, 1, mailer.calls, "login/email aliases must trigger one shared threshold notification")
+	emailCount, err := repo.CountFailedLogins(ctx, "alias.lock@example.test", time.Now().Add(-time.Minute))
+	require.NoError(t, err)
+	require.Zero(t, emailCount)
+	_, err = a.LoginPassword(ctx, "alias.lock@example.test", "Alias-Lock-11!", nil)
+	require.ErrorIs(t, err, ErrLocked)
+}
+
 // A user can revoke their own session directly (no OTP); the refresh token dies.
 func TestIntegration_RevokeOwnSession(t *testing.T) {
 	repo, done := testDB(t)

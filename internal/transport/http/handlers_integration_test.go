@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/olegkapshai/auth-master/internal/config"
+	"github.com/olegkapshai/auth-master/internal/crypto"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"github.com/olegkapshai/auth-master/internal/mail"
 	"github.com/olegkapshai/auth-master/internal/migrate"
@@ -51,7 +52,37 @@ func httpIntegrationTestConfig() *config.Config {
 	}
 }
 
-func testRepoForHTTPIntegration(t *testing.T) (repository.Repository, func()) {
+func TestIntegration_HTTPLoginAliasesShareLockoutCounter(t *testing.T) {
+	repo, done := testRepoForHTTPIntegration(t)
+	defer done()
+	ctx := context.Background()
+	cfg := httpIntegrationTestConfig()
+	cfg.LoginFailMax = 3
+	hash, err := crypto.HashPassword("Alias-HTTP9!")
+	require.NoError(t, err)
+	uid, err := repo.CreateHumanUser(ctx, "http-alias", "HTTP.ALIAS@example.test", hash)
+	require.NoError(t, err)
+	a, err := service.NewAuth(cfg, repo, &mail.Sender{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+	server := httptest.NewServer(NewServer(cfg, a, repo, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer server.Close()
+	for _, identity := range []string{"http-alias", "HTTP.ALIAS@EXAMPLE.TEST", "http-alias"} {
+		body := fmt.Sprintf(`{"login":%q,"password":"wrong"}`, identity)
+		response, callErr := http.Post(server.URL+"/v1/auth/login", "application/json", strings.NewReader(body))
+		require.NoError(t, callErr)
+		response.Body.Close()
+		require.Equal(t, http.StatusUnauthorized, response.StatusCode)
+	}
+	user, err := repo.GetUserByID(ctx, uid)
+	require.NoError(t, err)
+	require.NotNil(t, user.LockedUntil)
+	response, err := http.Post(server.URL+"/v1/auth/login", "application/json", strings.NewReader(`{"login":"http.alias@example.test","password":"Alias-HTTP9!"}`))
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusLocked, response.StatusCode)
+}
+
+func testRepoForHTTPIntegration(t *testing.T) (*repository.Store, func()) {
 	t.Helper()
 	ctx := context.Background()
 	dsn, terminate := testutil.StartPostgres16TestcontainerForTest(t, ctx)
@@ -66,6 +97,115 @@ func testRepoForHTTPIntegration(t *testing.T) (repository.Repository, func()) {
 		terminate()
 	}
 	return repository.New(db), cleanup
+}
+
+func TestIntegration_HTTPPasswordlessMagicHasFullAuthorizationAndReset(t *testing.T) {
+	repo, done := testRepoForHTTPIntegration(t)
+	defer done()
+	ctx := context.Background()
+	cfg := httpIntegrationTestConfig()
+	a, err := service.NewAuth(cfg, repo, &mail.Sender{Host: "127.0.0.1", Port: 1025, From: "t@test.dev"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+	require.NoError(t, a.EnsureBootstrap(ctx))
+	uid, err := repo.CreatePasswordlessHuman(ctx, "passwordless-http", "PASSWORDLESS@EXAMPLE.TEST")
+	require.NoError(t, err)
+	require.NoError(t, repo.SetSuperuser(ctx, uid, true))
+	role, err := repo.CreateRole(ctx, "admin", "", nil)
+	require.NoError(t, err)
+	require.NoError(t, repo.AssignUserRole(ctx, uid, role, domain.RoleMember, nil, time.Now(), nil))
+	magic := "passwordless-http-known-magic-token"
+	_, err = repo.InsertMagicLink(ctx, a.IntegrationMagicHash(magic), uid, time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	ts := httptest.NewServer(NewServer(cfg, a, repo, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/auth/login/magic-link/verify", "application/json", strings.NewReader(`{"token":"`+magic+`","device_id":"passwordless-http"}`))
+	require.NoError(t, err)
+	var login struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&login))
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	do := func(method, path, body string) *http.Response {
+		req, requestErr := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		require.NoError(t, requestErr)
+		req.Header.Set("Authorization", "Bearer "+login.AccessToken)
+		req.Header.Set("Content-Type", "application/json")
+		result, requestErr := http.DefaultClient.Do(req)
+		require.NoError(t, requestErr)
+		return result
+	}
+	for _, path := range []string{"/v1/me", "/v1/sessions", "/v1/me/has-role?role_name=admin", "/v1/admin/users"} {
+		result := do(http.MethodGet, path, "")
+		require.Equal(t, http.StatusOK, result.StatusCode)
+		result.Body.Close()
+	}
+	result := do(http.MethodPost, "/v1/auth/has-role", `{"token":"`+login.AccessToken+`","role_name":"admin"}`)
+	require.Equal(t, http.StatusOK, result.StatusCode, "cross-service authorization must accept a passwordless magic session")
+	var roleCheck struct {
+		HasRole bool `json:"has_role"`
+	}
+	require.NoError(t, json.NewDecoder(result.Body).Decode(&roleCheck))
+	require.True(t, roleCheck.HasRole)
+	result.Body.Close()
+	result, err = http.Post(ts.URL+"/v1/auth/password/reset/start", "application/json", strings.NewReader(`{"login":" PASSWORDLESS@example.test "}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	result.Body.Close()
+	require.NoError(t, a.Shutdown(ctx), "drain the private delivery worker before inspecting persistence")
+	resetOTP, err := repo.GetMostRecentOTP(ctx, uid, domain.OTPPasswordReset)
+	require.NoError(t, err)
+	require.NotNil(t, resetOTP)
+	require.Nil(t, resetOTP.ConsumedAt)
+	code := "123987"
+	_, issued, err := repo.IssuePasswordResetOTP(ctx, uid, a.IntegrationOTPHash(code), time.Now(), time.Now().Add(time.Minute), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	result, err = http.Post(ts.URL+"/v1/auth/password/reset/complete", "application/json", strings.NewReader(`{"login":"passwordless-http","code":"`+code+`","new_password":"Optional-New9!"}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, result.StatusCode)
+	result.Body.Close()
+	passwordLogin, err := a.LoginPassword(ctx, "PASSWORDLESS@example.test", "Optional-New9!", nil)
+	require.NoError(t, err)
+	require.True(t, passwordLogin.OTPRequired)
+}
+
+type failingHTTPMagicMailer struct{}
+
+func (failingHTTPMagicMailer) Send(context.Context, []string, string, string) error {
+	return fmt.Errorf("smtp unavailable")
+}
+
+func TestIntegration_HTTPMagicStartHidesKnownIdentityDuringDeliveryFailure(t *testing.T) {
+	repo, done := testRepoForHTTPIntegration(t)
+	defer done()
+	ctx := context.Background()
+	cfg := httpIntegrationTestConfig()
+	a, err := service.NewAuth(cfg, repo, failingHTTPMagicMailer{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+	_, err = repo.CreatePasswordlessHuman(ctx, "known-magic", "known-magic@example.test")
+	require.NoError(t, err)
+	ts := httptest.NewServer(NewServer(cfg, a, repo, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer ts.Close()
+
+	request := func(login string) (int, string) {
+		t.Helper()
+		resp, callErr := http.Post(ts.URL+"/v1/auth/login/magic-link", "application/json", strings.NewReader(fmt.Sprintf(`{"login":%q}`, login)))
+		require.NoError(t, callErr)
+		defer resp.Body.Close()
+		body, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, readErr)
+		return resp.StatusCode, string(body)
+	}
+
+	unknownStatus, unknownBody := request("unknown-magic")
+	knownStatus, knownBody := request("known-magic")
+	require.Equal(t, http.StatusOK, unknownStatus)
+	require.Equal(t, unknownStatus, knownStatus)
+	require.Equal(t, unknownBody, knownBody)
+	require.JSONEq(t, `{"status":"link_sent"}`, knownBody)
+	require.NoError(t, a.Shutdown(ctx), "drain both parity requests before the test database closes")
 }
 
 func mergeCookies(prev []*http.Cookie, upd []*http.Cookie) []*http.Cookie {

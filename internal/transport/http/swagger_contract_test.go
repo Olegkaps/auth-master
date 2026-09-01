@@ -74,6 +74,8 @@ func TestGeneratedSwaggerDocumentsCSRFErrorsAndNullableFields(t *testing.T) {
 	require.Contains(t, refreshResponses, "403")
 
 	definitions := spec["definitions"].(map[string]any)
+	meProperties := definitions["httptransport.MeResponse"].(map[string]any)["properties"].(map[string]any)
+	require.NotContains(t, meProperties, "password_setup_required", "password presence is not an authorization or setup state")
 	refreshSchema := definitions["httptransport.RefreshRequestBody"].(map[string]any)
 	_, hasRequired := refreshSchema["required"]
 	require.False(t, hasRequired, "every refresh body field is conditionally optional")

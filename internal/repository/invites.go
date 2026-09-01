@@ -86,7 +86,8 @@ func (s *Store) RegisterHumanWithInvite(
 		if err != nil {
 			return err
 		}
-		email = strings.TrimSpace(email)
+		login = strings.ToLower(strings.TrimSpace(login))
+		email = strings.ToLower(strings.TrimSpace(email))
 		if invite.Email != nil && strings.TrimSpace(*invite.Email) != "" && !strings.EqualFold(email, strings.TrimSpace(*invite.Email)) {
 			return nil
 		}

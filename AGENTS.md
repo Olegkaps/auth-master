@@ -103,6 +103,12 @@ role/tag checks, and manager/superuser checks must also reject banned users so
 non-HTTP callers cannot bypass the ban. Do not weaken this to refresh-time-only
 enforcement.
 
+Human users with `password_hash = NULL` are passwordless, not pending. They may
+authenticate repeatedly through magic links and receive normal access tokens,
+RBAC, and superuser authority. Password login fails generically while the hash
+is absent. Forgot-password reset is optional and can establish a password for
+either passwordless users or users who forgot an existing password.
+
 Superusers cannot be banned. Cross-service authorization uses the public POST
 `/v1/auth/has-role` and `/v1/auth/has-role-with-tag` endpoints with a human
 access token in the JSON body; derive the subject from the verified token and
@@ -121,3 +127,7 @@ Authorization header as a bypass.
 An existing account is accepted only when it is the same active superuser
 service and its hash matches the configured secret. Never replace, return, or
 log that credential.
+
+`MAGIC_LINK_CALLBACK_URL` and `REGISTRATION_INVITE_CALLBACK_URL` select an
+integrating application's browser routes. Preserve the auth-master SPA defaults
+when they are unset, and append tokens as escaped query parameters.

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoad_defaultCryptoKeys(t *testing.T) {
@@ -37,6 +38,38 @@ func TestLoad_ok(t *testing.T) {
 	}
 	if c.OTPMaxAttempts != 5 || c.OTPResetMinInterval.String() != "1m0s" {
 		t.Fatalf("unexpected OTP limits: attempts=%d interval=%s", c.OTPMaxAttempts, c.OTPResetMinInterval)
+	}
+	if c.SMTPTimeout != 5*time.Second {
+		t.Fatalf("unexpected SMTP timeout: %s", c.SMTPTimeout)
+	}
+	if c.PublicMailWorkers != 2 || c.PublicMailQueueSize != 64 || c.PublicMailJobTimeout != 10*time.Second {
+		t.Fatalf("unexpected public mail queue config: workers=%d size=%d timeout=%s", c.PublicMailWorkers, c.PublicMailQueueSize, c.PublicMailJobTimeout)
+	}
+}
+
+func TestLoadRejectsNonPositiveSMTPTimeout(t *testing.T) {
+	t.Setenv("SMTP_TIMEOUT", "0s")
+	_, err := Load()
+	if err == nil || err.Error() != "SMTP_TIMEOUT must be positive" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidPublicMailQueueConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, key, value, want string
+	}{
+		{"workers", "PUBLIC_MAIL_WORKERS", "0", "PUBLIC_MAIL_WORKERS must be positive"},
+		{"capacity", "PUBLIC_MAIL_QUEUE_SIZE", "-1", "PUBLIC_MAIL_QUEUE_SIZE must be positive"},
+		{"timeout", "PUBLIC_MAIL_JOB_TIMEOUT", "0s", "PUBLIC_MAIL_JOB_TIMEOUT must be positive"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.key, test.value)
+			_, err := Load()
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

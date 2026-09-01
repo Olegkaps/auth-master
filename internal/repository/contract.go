@@ -18,6 +18,7 @@ type Repository interface {
 	RegisterHumanWithInvite(ctx context.Context, tokenHash []byte, login, email, passwordHash string, historyCipher, historyNonce []byte, historyKeep int) (uuid.UUID, bool, error)
 	CreateServiceUser(ctx context.Context, login, secretHash string, superuser bool) (uuid.UUID, error)
 	GetUserByLogin(ctx context.Context, login string) (*domain.User, error)
+	GetHumanUserByLoginOrEmail(ctx context.Context, identity string) (*domain.User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 	SetLockedUntil(ctx context.Context, userID uuid.UUID, t *time.Time) error
 	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
@@ -82,6 +83,8 @@ type Repository interface {
 	GetOTPByCorrelation(ctx context.Context, correlation string) (*OTPRow, error)
 	GetMostRecentOTP(ctx context.Context, userID uuid.UUID, purpose domain.OTPPurpose) (*OTPRow, error)
 	IssuePasswordResetOTP(ctx context.Context, userID uuid.UUID, codeHash []byte, now, expiresAt time.Time, minInterval time.Duration) (uuid.UUID, bool, error)
+	ReservePasswordResetOTP(ctx context.Context, userID uuid.UUID, codeHash []byte, now, expiresAt time.Time, minInterval time.Duration) (uuid.UUID, bool, error)
+	ActivatePasswordResetOTP(ctx context.Context, userID, otpID uuid.UUID, now time.Time) (PasswordResetActivation, error)
 	CompletePasswordResetOTP(ctx context.Context, userID uuid.UUID, candidateHash []byte, now time.Time, maxAttempts, historyLimit int, prepare PasswordResetPreparer) (bool, error)
 	ConsumeOTP(ctx context.Context, id uuid.UUID) error
 	IncrementOTPAttempt(ctx context.Context, id uuid.UUID) error
@@ -107,6 +110,7 @@ type Repository interface {
 	MarkRegistrationInviteUsed(ctx context.Context, id uuid.UUID) error
 
 	InsertMagicLink(ctx context.Context, tokenHash []byte, userID uuid.UUID, expiresAt time.Time) (uuid.UUID, error)
+	InvalidateMagicLink(ctx context.Context, id uuid.UUID) error
 	ConsumeMagicLink(ctx context.Context, tokenHash []byte) (uuid.UUID, error)
 }
 
@@ -119,6 +123,13 @@ type PasswordResetMutation struct {
 }
 
 type PasswordResetPreparer func(history []PasswordHistoryEntry) (PasswordResetMutation, error)
+
+type PasswordResetActivation string
+
+const (
+	PasswordResetActivated  PasswordResetActivation = "activated"
+	PasswordResetSuperseded PasswordResetActivation = "superseded"
+)
 
 var _ Repository = (*Store)(nil)
 

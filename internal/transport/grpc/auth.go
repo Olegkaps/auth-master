@@ -143,9 +143,6 @@ func (s *Server) VerifyLoginOTP(ctx context.Context, req *authv1.VerifyLoginOTPR
 }
 
 func (s *Server) StartMagicLink(ctx context.Context, req *authv1.StartMagicLinkRequest) (*emptypb.Empty, error) {
-	if _, err := normalizeText("login", req.GetLogin(), 100); err != nil {
-		return nil, err
-	}
 	return &emptypb.Empty{}, s.auth.StartMagicLink(ctx, req.GetLogin())
 }
 
@@ -161,9 +158,6 @@ func (s *Server) CompleteMagicLink(ctx context.Context, req *authv1.CompleteMagi
 }
 
 func (s *Server) StartPasswordReset(ctx context.Context, req *authv1.StartPasswordResetRequest) (*emptypb.Empty, error) {
-	if _, err := normalizeText("login", req.GetLogin(), 100); err != nil {
-		return nil, err
-	}
 	return &emptypb.Empty{}, s.auth.StartPasswordReset(ctx, req.GetLogin())
 }
 

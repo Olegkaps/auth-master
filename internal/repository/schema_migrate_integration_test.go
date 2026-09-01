@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,103 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+func TestIntegration_HumanLoginEmailNamespaceIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	dsn, done := testutil.StartPostgres16TestcontainerForTest(t, ctx)
+	defer done()
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, MigrateDB(db))
+	store := New(db)
+	require.Error(t, db.Exec("INSERT INTO users (id, login, email, kind, password_hash, created_at, updated_at) VALUES (?, 'blank-email', '   ', 'human', 'hash', NOW(), NOW())", uuid.New()).Error)
+	validID, err := store.CreateHumanUser(ctx, "valid-email", "valid-email@example.test", "hash")
+	require.NoError(t, err)
+	require.Error(t, db.Exec("UPDATE users SET email = NULL WHERE id = ?", validID).Error)
+
+	for _, tc := range []struct {
+		name   string
+		first  [2]string
+		second [2]string
+	}{
+		{name: "login races email", first: [2]string{"shared-a", "owner-a@example.test"}, second: [2]string{"other-a", "SHARED-A"}},
+		{name: "email races login", first: [2]string{"other-b", "Shared-B"}, second: [2]string{"SHARED-B", "owner-b@example.test"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := make(chan struct{})
+			errs := make(chan error, 2)
+			var wg sync.WaitGroup
+			for _, identity := range [][2]string{tc.first, tc.second} {
+				identity := identity
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					_, createErr := store.CreateHumanUser(ctx, identity[0], identity[1], "hash")
+					errs <- createErr
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(errs)
+			successes := 0
+			for createErr := range errs {
+				if createErr == nil {
+					successes++
+				}
+			}
+			require.Equal(t, 1, successes, "the shared normalized identity must be claimed exactly once")
+		})
+	}
+
+	t.Run("concurrent updates claim one cross-field key", func(t *testing.T) {
+		left, createErr := store.CreateHumanUser(ctx, "update-left", "update-left@example.test", "hash")
+		require.NoError(t, createErr)
+		right, createErr := store.CreateHumanUser(ctx, "update-right", "update-right@example.test", "hash")
+		require.NoError(t, createErr)
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		for _, update := range []func() error{
+			func() error { return db.Exec("UPDATE users SET login = 'update-shared' WHERE id = ?", left).Error },
+			func() error { return db.Exec("UPDATE users SET email = ' UPDATE-SHARED ' WHERE id = ?", right).Error },
+		} {
+			update := update
+			wg.Add(1)
+			go func() { defer wg.Done(); <-start; errs <- update() }()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		successes := 0
+		for updateErr := range errs {
+			if updateErr == nil {
+				successes++
+			}
+		}
+		require.Equal(t, 1, successes)
+	})
+}
+
+func TestIntegration_MigrateDBRejectsLegacyCrossFieldIdentityCollision(t *testing.T) {
+	ctx := context.Background()
+	dsn, done := testutil.StartPostgres16TestcontainerForTest(t, ctx)
+	defer done()
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, MigrateDB(db))
+	require.NoError(t, db.Exec("DROP TRIGGER users_sync_human_identity_keys ON users; DROP TRIGGER users_canonicalize_identity ON users; DROP TABLE user_identity_keys").Error)
+
+	first, second := uuid.New(), uuid.New()
+	require.NoError(t, db.Exec("INSERT INTO users (id, login, email, kind, password_hash, created_at, updated_at) VALUES (?, ' Alice ', 'owner@example.test', 'human', 'hash', NOW(), NOW())", first).Error)
+	require.NoError(t, db.Exec("INSERT INTO users (id, login, email, kind, password_hash, created_at, updated_at) VALUES (?, 'other', 'ALICE', 'human', 'hash', NOW(), NOW())", second).Error)
+	err = MigrateDB(db)
+	require.ErrorContains(t, err, "user identity migration blocked")
+	require.ErrorContains(t, err, "human:alice")
+	var unchanged string
+	require.NoError(t, db.Raw("SELECT login FROM users WHERE id = ?", first).Scan(&unchanged).Error)
+	require.Equal(t, " Alice ", unchanged)
+}
 
 func TestIntegration_MigrateDBRoleNamePreflightAndRepair(t *testing.T) {
 	ctx := context.Background()

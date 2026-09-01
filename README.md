@@ -176,19 +176,87 @@ The explicit copy is optional: every Compose-backed Make target creates the
 ignored `.env` from `.env.example` when it is missing and never overwrites an
 existing developer file.
 
+## MCP server for AI agents
+
+`cmd/auth-master-mcp` is a local stdio MCP server backed by auth-master's typed
+gRPC API. It exposes 13 focused user and RBAC tools: paginated user and role
+lookup, membership inspection, role creation and assignment, bans, and
+single-pair role-tag and membership-tag changes. Authentication credentials are
+read only from the MCP subprocess environment; they are never accepted as tool
+arguments or returned to the model.
+
+Build the server and start auth-master:
+
+```bash
+make mcp-build
+make up
+```
+
+Provision a dedicated service account through the existing superuser API. The
+complete MCP surface needs a superuser service because user listing and bans are
+superuser-only; a non-superuser service can use only the operations authorized
+by its assigned role memberships. Then add the executable to any stdio-capable
+MCP host, using an absolute command path:
+
+```json
+{
+  "mcpServers": {
+    "auth-master": {
+      "command": "/absolute/path/to/auth-master/.tools/bin/auth-master-mcp",
+      "env": {
+        "AUTH_MASTER_GRPC_ADDR": "localhost:9090",
+        "AUTH_MASTER_SERVICE_LOGIN": "agent-admin",
+        "AUTH_MASTER_SERVICE_SECRET": "replace-with-the-provisioned-secret"
+      }
+    }
+  }
+}
+```
+
+The adapter caches short-lived service JWTs in memory and refreshes them before
+expiry. Each upstream call has a 10-second deadline by default; override it with
+`AUTH_MASTER_REQUEST_TIMEOUT`, for example `3s`.
+
+The default gRPC connection is plaintext and is intended only for trusted local
+development. For TLS, set `AUTH_MASTER_GRPC_TLS_CA_FILE` to a PEM CA bundle and,
+when hostname inference is unsuitable, set
+`AUTH_MASTER_GRPC_TLS_SERVER_NAME`. Standard output is reserved exclusively for
+MCP messages; startup failures are written to standard error.
+
+The MCP adapter does not expose login, OTP, refresh tokens, password changes,
+service-account creation, signing-key rotation, or registration invites. Those
+credential and bootstrap workflows remain on the audited REST and gRPC APIs.
+There is no SPA change, so Playwright coverage does not apply; protocol unit
+tests and a full PostgreSQL-to-MCP integration journey cover this executable.
+
 ## Security model
 
 - Passwords require upper- and lowercase letters, a number, and a special
   character. Password history and Levenshtein similarity checks prevent reuse.
-- Login is password plus a single-use email OTP challenge. An incorrect OTP
-  consumes the challenge.
+- Human users may sign in either with password plus a single-use email OTP, or
+  with a fresh email magic link. These are equal alternatives: a password is
+  never required for repeated magic-link login. An incorrect OTP consumes its
+  password-login challenge.
 - Password-reset OTPs allow at most `OTP_MAX_ATTEMPTS` wrong codes (five by
   default), and reset issuance is throttled by `OTP_RESET_MIN_INTERVAL` (one
   minute by default). The public start endpoint gives the same response for
   unknown, throttled, and known accounts to avoid account enumeration.
+- Public magic-link and password-reset starts synchronously do only input
+  normalization and a nonblocking enqueue. A fixed worker pool performs every
+  identity lookup, token/OTP write, and SMTP exchange under its own deadline,
+  so known and unknown identities have the same request path. The bounded
+  queue deliberately drops excess or shutdown-time work while preserving the
+  same generic response; the UI tells users to wait briefly and request again.
+  Tune positive `PUBLIC_MAIL_WORKERS`, `PUBLIC_MAIL_QUEUE_SIZE`, and
+  `PUBLIC_MAIL_JOB_TIMEOUT` values when the defaults (2, 64, and 10 seconds)
+  are unsuitable.
+- Reset codes remain pending until SMTP accepts the message. `SMTP_TIMEOUT`
+  bounds the complete SMTP exchange (five seconds by default), and service
+  shutdown/job cancellation closes an in-flight connection.
 - Password changes require the current password and a separate email OTP.
 - Magic links are single-use, time-limited passwordless login tokens stored as
-  hashes.
+  hashes. Requesting another link remains available after every sign-out;
+  forgot-password is optional and can establish or replace a password.
 - Refresh tokens rotate and are scoped to a stable browser device identifier.
 - Signing keys can rotate; clients transparently refresh stale access tokens.
 - State-changing cookie-authenticated requests use CSRF protection.
@@ -197,6 +265,16 @@ existing developer file.
 
 All configuration variables and defaults are documented in `.env.example` and
 `internal/config/config.go`.
+
+Production deployments can keep sensitive values out of container inspection
+by setting a matching `_FILE` variable instead of the direct environment
+variable. Authd supports file-backed `DATABASE_URL`, SMTP user/password,
+bootstrap passwords/service secrets, both encryption keys, and the registration
+and magic callback URLs. For example, set
+`DATABASE_URL_FILE=/run/secrets/auth_database_url`. The file may end with the
+usual newline, which is removed; other whitespace is preserved. Setting both
+`NAME` and `NAME_FILE`, using an empty/unreadable file, or exceeding 64 KiB is a
+startup error.
 
 For trusted local automation, set both
 `BOOTSTRAP_SUPERUSER_SERVICE_LOGIN` and

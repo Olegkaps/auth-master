@@ -99,6 +99,67 @@ func testRepoForHTTPIntegration(t *testing.T) (*repository.Store, func()) {
 	return repository.New(db), cleanup
 }
 
+func TestIntegration_HTTPOpenRegistrationAndSkippedLoginOTP(t *testing.T) {
+	repo, done := testRepoForHTTPIntegration(t)
+	defer done()
+	ctx := context.Background()
+	cfg := httpIntegrationTestConfig()
+	cfg.RegistrationOpen = true
+	cfg.SkipLoginOTP = true
+	auth, err := service.NewAuth(cfg, repo, &mail.Sender{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+	require.NoError(t, auth.EnsureBootstrap(ctx))
+	server := httptest.NewServer(NewServer(cfg, auth, repo, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/v1/auth/registration-invite")
+	require.NoError(t, err)
+	var preview struct {
+		Valid            bool `json:"valid"`
+		RegistrationOpen bool `json:"registration_open"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&preview))
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.False(t, preview.Valid)
+	require.True(t, preview.RegistrationOpen)
+
+	registerBody := `{"login":"http-open","email":"http-open@test.dev","password":"HTTP-Open-Password1!"}`
+	response, err = http.Post(server.URL+"/v1/auth/register", "application/json", strings.NewReader(registerBody))
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusCreated, response.StatusCode)
+	user, err := repo.GetUserByLogin(ctx, "http-open")
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	require.False(t, user.Superuser)
+
+	strictBody := `{"invite_token":"invalid-explicit","login":"http-strict","email":"http-strict@test.dev","password":"HTTP-Strict-Password1!"}`
+	response, err = http.Post(server.URL+"/v1/auth/register", "application/json", strings.NewReader(strictBody))
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusGone, response.StatusCode)
+
+	loginBody := `{"login":"http-open","password":"HTTP-Open-Password1!"}`
+	response, err = http.Post(server.URL+"/v1/auth/login", "application/json", strings.NewReader(loginBody))
+	require.NoError(t, err)
+	var login struct {
+		OTPSent   bool   `json:"otp_sent"`
+		Challenge string `json:"login_challenge"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&login))
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.False(t, login.OTPSent)
+	require.NotEmpty(t, login.Challenge)
+
+	verifyBody := fmt.Sprintf(`{"challenge":%q,"code":"","device_id":"http-open-device"}`, login.Challenge)
+	response, err = http.Post(server.URL+"/v1/auth/login/verify-otp", "application/json", strings.NewReader(verifyBody))
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusOK, response.StatusCode)
+}
+
 func TestIntegration_HTTPPasswordlessMagicHasFullAuthorizationAndReset(t *testing.T) {
 	repo, done := testRepoForHTTPIntegration(t)
 	defer done()

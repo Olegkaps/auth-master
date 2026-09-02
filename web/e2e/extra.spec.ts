@@ -73,7 +73,8 @@ test('can open an invite link while signed in and add the account', async ({ pag
   await page.goto(`/#/register?token=${encodeURIComponent(token)}`)
   await expect(page.getByTestId('reg-login')).toBeVisible() // not bounced to the dashboard
   await page.getByTestId('reg-login').fill(login)
-  await page.getByTestId('reg-email').fill(email)
+  await expect(page.getByTestId('reg-email')).toHaveValue(email)
+  await expect(page.getByTestId('reg-email')).toHaveAttribute('readonly', '')
   await page.getByTestId('reg-password').fill(pass)
   await page.getByTestId('reg-submit').click()
 
@@ -144,7 +145,8 @@ test('superuser invite grants admin access', async ({ page, browser }) => {
   await up.goto(`/#/register?token=${encodeURIComponent(token)}`)
   await expect(up.getByText(/grants superuser/i)).toBeVisible()
   await up.getByTestId('reg-login').fill(login)
-  await up.getByTestId('reg-email').fill(email)
+  await expect(up.getByTestId('reg-email')).toHaveValue(email)
+  await expect(up.getByTestId('reg-email')).toHaveAttribute('readonly', '')
   await up.getByTestId('reg-password').fill(pass)
   await up.getByTestId('reg-submit').click()
   await expect(up.getByTestId('login-input')).toBeVisible()

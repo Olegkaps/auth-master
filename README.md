@@ -19,12 +19,90 @@ framework-free TypeScript SPA.
 ```bash
 cp .env.example .env
 make install
-make up
 ```
+
+Choose one profile before starting. `make up` passes `.env` to Compose and
+recreates `authd` when its effective environment changes.
+
+For the safe, invite-only profile, add these exact entries to `.env`:
+
+```dotenv
+BOOTSTRAP_SUPERUSER_LOGIN=admin
+BOOTSTRAP_SUPERUSER_EMAIL=admin@localhost
+BOOTSTRAP_SUPERUSER_PASSWORD=Adm1n!Passw0rd123
+```
+
+Then run `make up`, open `http://localhost:8080`, and sign in as `admin`. Read
+the emailed login code at `http://localhost:8025`, then open **Invites** in the
+app to create the first registration link.
+
+For a frictionless local demo, add these exact entries to `.env` instead (or in
+addition to the bootstrap account):
+
+```dotenv
+REGISTRATION_OPEN=true
+SKIP_LOGIN_OTP=true
+```
+
+Run `make up` again to start or recreate the stack. For a one-off Compose run,
+the equivalent parent-shell override is:
+
+```bash
+REGISTRATION_OPEN=true SKIP_LOGIN_OTP=true make up
+```
+
+`make dev` is different: it starts infrastructure and the Go backend directly,
+so it does not source `.env` into the backend process. Pass non-default values
+explicitly, then run the SPA in another terminal:
+
+```bash
+REGISTRATION_OPEN=true SKIP_LOGIN_OTP=true make dev
+make web-dev
+```
+
+Equivalently, export those two variables before `make dev`; do not shell-source
+`.env`. The `make dev` recipe supplies its documented `admin` bootstrap account
+itself.
 
 The production SPA and API gateway are available at `http://localhost:8080`, Swagger UI at
 `http://localhost:8080/swagger/`, gRPC at `localhost:9090`, and Mailpit at
 `http://localhost:8025`.
+
+For an intentionally frictionless local demo, set `REGISTRATION_OPEN=true` to
+allow ordinary human accounts to register without an invite and
+`SKIP_LOGIN_OTP=true` to complete password login without an emailed code. Both
+default to `false` and should remain disabled in production. Supplied invite
+tokens are always checked, and password reset/change, step-up OTP, and magic
+links remain strict under these flags.
+With `LOG_LEVEL=debug`, `info`, or `warn`, authd emits a startup warning naming
+any enabled development authentication flags. `LOG_LEVEL=error` intentionally
+filters that warning.
+
+### Password-login continuation
+
+An expired password does not enter OTP verification. REST `POST /v1/auth/login`
+returns HTTP 403 with `{"password_expired":true}` and no `login_challenge`;
+complete password reset, then start a new login attempt. The gRPC
+`AuthService.LoginPassword` equivalent returns `password_expired=true`,
+`login_challenge=""`, and likewise requires password reset rather than
+`VerifyLoginOTP`.
+
+After a successful, non-expired password check, REST returns HTTP 200 and gRPC
+returns `password_expired=false`, both with a single-use `login_challenge`.
+When `otp_sent=true`, collect the emailed code. When `otp_sent=false`, no code
+was sent, but the client must still make exactly one verification call with
+`code=""` and a stable `device_id`:
+
+```http
+POST /v1/auth/login/verify-otp
+Content-Type: application/json
+
+{"challenge":"<login_challenge>","code":"","device_id":"browser-123"}
+```
+
+The equivalent gRPC continuation is `AuthService.VerifyLoginOTP` with the same
+empty `code`. A challenge is single-use in either mode; do not retry its verify
+call after an error—restart from the password step.
 
 Runnable integrations for MinIO storage, an HTTP deployment API, and a gRPC
 support desk are indexed in [`examples/`](examples/README.md). Build all three
@@ -237,6 +315,15 @@ tests and a full PostgreSQL-to-MCP integration journey cover this executable.
   with a fresh email magic link. These are equal alternatives: a password is
   never required for repeated magic-link login. An incorrect OTP consumes its
   password-login challenge.
+- `REGISTRATION_OPEN` and `SKIP_LOGIN_OTP` are opt-in demo controls, disabled by
+  default. Open registration can create only ordinary active human users. OTP
+  skipping applies only after all password-login checks and still creates a
+  TTL-bound, single-use empty-code challenge; it never weakens challenges
+  issued while normal OTP was enabled or any reset, change, step-up, invite, or
+  magic-link token.
+  Open registration also exposes password hashing work to unauthenticated
+  callers; keep it disabled outside controlled demos unless the deployment adds
+  appropriate edge rate limits and abuse protection.
 - Password-reset OTPs allow at most `OTP_MAX_ATTEMPTS` wrong codes (five by
   default), and reset issuance is throttled by `OTP_RESET_MIN_INTERVAL` (one
   minute by default). The public start endpoint gives the same response for
@@ -375,6 +462,9 @@ also routed through the service authorization boundary.
 `web/` is a Vite/TypeScript demonstration client without a UI framework. It
 shows login and email OTP, password reset, magic-link login, multi-account
 switching, session management, invites, signing-key rotation, and RBAC.
+It discovers `registration_open` through the public registration preview
+contract, hides the invite field only for tokenless open signup, and completes
+`otp_sent=false` password logins without rendering an OTP field.
 
 The Roles page lists every parent mount. Superusers can always add or remove
 mounts. A role manager may do the same only when they manage both the child and
@@ -404,9 +494,10 @@ Run every check through `make`:
 | `make test-race` | Unit tests with Go's race detector |
 | `make test-integration` | PostgreSQL integration tests and the coverage gate |
 | `make test-e2e` | Playwright browser tests against a real stack |
+| `make test-e2e-dev-flags` | Isolated open-registration and skipped-OTP browser tests |
 | `make test-fuzz` | Short fuzz smoke tests used by CI |
 | `make check` | Fast pre-merge lint and integration gate |
-| `make test` | Complete suite with a final per-group summary |
+| `make test` | Complete suite, including both default and opt-in E2E phases, with a final per-group summary |
 | `make web-build` | Production SPA build |
 | `make docker-build` | Production container-image build through Compose |
 

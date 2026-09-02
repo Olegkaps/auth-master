@@ -41,3 +41,13 @@ func TestLoadGRPCCredentials(t *testing.T) {
 		t.Fatalf("invalid certificate: credentials=%v err=%v", credentials, err)
 	}
 }
+
+func TestEnabledDevelopmentAuthFlags(t *testing.T) {
+	if got := enabledDevelopmentAuthFlags(config.Config{}); len(got) != 0 {
+		t.Fatalf("safe defaults reported development flags: %v", got)
+	}
+	got := enabledDevelopmentAuthFlags(config.Config{RegistrationOpen: true, SkipLoginOTP: true})
+	if len(got) != 2 || got[0] != "REGISTRATION_OPEN" || got[1] != "SKIP_LOGIN_OTP" {
+		t.Fatalf("enabled flags = %v", got)
+	}
+}

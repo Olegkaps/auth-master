@@ -72,19 +72,24 @@ func (a *Auth) Shutdown(ctx context.Context) error {
 
 func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password string) (uuid.UUID, error) {
 	inviteToken = strings.TrimSpace(inviteToken)
-	if inviteToken == "" {
+	openRegistration := inviteToken == "" && a.cfg.RegistrationOpen
+	if inviteToken == "" && !openRegistration {
 		return uuid.Nil, ErrInvalidInvite
 	}
-	inv, err := a.repo.GetValidRegistrationInviteByTokenHash(ctx, hashRefreshToken(inviteToken))
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if inv == nil {
-		return uuid.Nil, ErrInvalidInvite
+	var inv *repository.RegistrationInvite
+	var err error
+	if !openRegistration {
+		inv, err = a.repo.GetValidRegistrationInviteByTokenHash(ctx, hashRefreshToken(inviteToken))
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if inv == nil {
+			return uuid.Nil, ErrInvalidInvite
+		}
 	}
 	login = normalizeLogin(login)
 	email = strings.ToLower(strings.TrimSpace(email))
-	if inv.Email != nil && strings.TrimSpace(*inv.Email) != "" && !strings.EqualFold(email, *inv.Email) {
+	if inv != nil && inv.Email != nil && strings.TrimSpace(*inv.Email) != "" && !strings.EqualFold(email, *inv.Email) {
 		return uuid.Nil, ErrInvalidInvite
 	}
 	if err := checkPasswordComplexity(password); err != nil {
@@ -102,6 +107,9 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	if err != nil {
 		return uuid.Nil, err
 	}
+	if openRegistration {
+		return a.repo.RegisterHumanOpen(ctx, login, email, hash, cipher, nonce, a.cfg.PasswordHistoryN)
+	}
 	id, registered, err := a.repo.RegisterHumanWithInvite(
 		ctx, hashRefreshToken(inviteToken), login, email, hash, cipher, nonce, a.cfg.PasswordHistoryN,
 	)
@@ -113,6 +121,10 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	}
 	return id, nil
 }
+
+// RegistrationOpen reports the public registration policy without exposing
+// the mutable Config to transports.
+func (a *Auth) RegistrationOpen() bool { return a.cfg.RegistrationOpen }
 
 type LoginPasswordResult struct {
 	OTPRequired     bool
@@ -150,9 +162,12 @@ func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net
 	if a.passwordExpired(u) {
 		return &LoginPasswordResult{PasswordExpired: true}, nil
 	}
-	code, err := randomNumericCode(a.cfg.OTPCodeLength)
-	if err != nil {
-		return nil, err
+	code := ""
+	if !a.cfg.SkipLoginOTP {
+		code, err = randomNumericCode(a.cfg.OTPCodeLength)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Bind the OTP to a single-use challenge issued only to whoever passed the
 	// password step. verify-otp requires this challenge, so an intercepted email
@@ -164,10 +179,10 @@ func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net
 	if _, err := a.repo.CreateEmailOTP(ctx, u.ID, domain.OTPLogin, chash, exp, &challenge); err != nil {
 		return nil, err
 	}
-	if u.Email != nil {
+	if !a.cfg.SkipLoginOTP && u.Email != nil {
 		_ = a.mail.Send(ctx, []string{*u.Email}, "Your login code", fmt.Sprintf("Code: %s (expires in %v)", code, a.cfg.OTPCodeTTL))
 	}
-	return &LoginPasswordResult{OTPRequired: true, LoginChallenge: challenge}, nil
+	return &LoginPasswordResult{OTPRequired: !a.cfg.SkipLoginOTP, LoginChallenge: challenge}, nil
 }
 
 func (a *Auth) passwordExpired(u *domain.User) bool {

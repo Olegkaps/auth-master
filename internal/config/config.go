@@ -31,6 +31,8 @@ type Config struct {
 	OTPMaxAttempts        int           `env:"OTP_MAX_ATTEMPTS" env-default:"5"`
 	OTPResetMinInterval   time.Duration `env:"OTP_RESET_MIN_INTERVAL" env-default:"1m"`
 	MagicLinkTTL          time.Duration `env:"MAGIC_LINK_TTL" env-default:"15m"`
+	RegistrationOpen      bool          `env:"REGISTRATION_OPEN" env-default:"false"`
+	SkipLoginOTP          bool          `env:"SKIP_LOGIN_OTP" env-default:"false"`
 	MaxSessionsPerUser    int           `env:"MAX_SESSIONS_PER_USER" env-default:"10"`
 	LoginFailWindow       time.Duration `env:"LOGIN_FAIL_WINDOW" env-default:"15m"`
 	LoginFailMax          int           `env:"LOGIN_FAIL_MAX" env-default:"5"`

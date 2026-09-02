@@ -266,7 +266,7 @@ export const api = {
   register: (invite_token: string, login: string, email: string, password: string) =>
     call<{ user_id: string }>('/v1/auth/register', { method: 'POST', skipAuth: true, body: { invite_token, login, email, password } }),
   previewInvite: (token: string) =>
-    call<{ valid: boolean; email?: string; superuser?: boolean; expires_at?: string }>(`/v1/auth/registration-invite?token=${encodeURIComponent(token)}`, { skipAuth: true }),
+    call<{ valid: boolean; registration_open: boolean; email?: string; superuser?: boolean; expires_at?: string }>(`/v1/auth/registration-invite?token=${encodeURIComponent(token)}`, { skipAuth: true }),
   login: (login: string, password: string) =>
     call<{ otp_sent?: boolean; password_expired?: boolean; login_challenge?: string }>('/v1/auth/login', { method: 'POST', skipAuth: true, body: { login, password } }),
   verifyOtp: (challenge: string, code: string, deviceId: string) =>

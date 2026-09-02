@@ -36,7 +36,7 @@ GOFMT_PATHS := $(shell find api cmd internal tools -name '*.go' 2>/dev/null | so
 
 .PHONY: help install install-e2e e2e-preflight env-file \
 	up down logs run dev web-dev grpc-smoke mcp-build proto proto-check proto-lint proto-breaking proto-baseline-update proto-tools \
-	test test-unit test-integration test-e2e test-race \
+	test test-unit test-integration test-e2e test-e2e-dev-flags test-race \
 	test-fuzz web-build docker-build \
 	fmt fmt-check vet lint lint-go lint-ts check swagger
 
@@ -163,6 +163,10 @@ test-e2e: e2e-preflight | .env
 test-e2e: ## Run Playwright UI tests against a managed stack
 	./scripts/e2e.sh $(E2E_ARGS)
 
+test-e2e-dev-flags: e2e-preflight | .env
+test-e2e-dev-flags: ## Run the isolated open-registration/skipped-OTP browser journeys
+	E2E_REGISTRATION_OPEN=true E2E_SKIP_LOGIN_OTP=true ./scripts/e2e.sh dev-flags.spec.ts
+
 # Run every group even when an earlier group fails, then print a summary.
 test: ## Run lint, race, fuzz, integration, and E2E with a summary
 	@fails=""; \
@@ -171,6 +175,7 @@ test: ## Run lint, race, fuzz, integration, and E2E with a summary
 	$(MAKE) --no-print-directory test-fuzz        || fails="$$fails fuzz"; \
 	$(MAKE) --no-print-directory test-integration || fails="$$fails integration"; \
 	$(MAKE) --no-print-directory test-e2e         || fails="$$fails e2e"; \
+	$(MAKE) --no-print-directory test-e2e-dev-flags || fails="$$fails e2e-dev-flags"; \
 	echo; echo "==================== SUMMARY ===================="; \
 	if [ -z "$$fails" ]; then echo "✅ all groups passed"; \
 	else echo "❌ failed groups:$$fails (details are shown above)"; exit 1; fi

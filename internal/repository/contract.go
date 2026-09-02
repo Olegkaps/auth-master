@@ -15,6 +15,7 @@ type Repository interface {
 	Ping(ctx context.Context) error
 
 	CreateHumanUser(ctx context.Context, login, email, passwordHash string) (uuid.UUID, error)
+	RegisterHumanOpen(ctx context.Context, login, email, passwordHash string, historyCipher, historyNonce []byte, historyKeep int) (uuid.UUID, error)
 	RegisterHumanWithInvite(ctx context.Context, tokenHash []byte, login, email, passwordHash string, historyCipher, historyNonce []byte, historyKeep int) (uuid.UUID, bool, error)
 	CreateServiceUser(ctx context.Context, login, secretHash string, superuser bool) (uuid.UUID, error)
 	GetUserByLogin(ctx context.Context, login string) (*domain.User, error)

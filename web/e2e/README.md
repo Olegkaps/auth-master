@@ -15,6 +15,7 @@ From the repo root:
 ```bash
 make install     # first time only: deps + Playwright browser
 make test-e2e    # brings up infra + backend, runs the suite, tears down
+make test-e2e-dev-flags  # isolated second phase with both demo flags enabled
 ```
 
 `make test-e2e` (via `scripts/e2e.sh`) starts Postgres + Mailpit through compose,
@@ -34,6 +35,8 @@ through `E2E_ARGS`, for example `make test-e2e E2E_ARGS='extra.spec.ts'`.
 | --- | --- | --- |
 | `E2E_BASE_URL` | `http://localhost:5173` | SPA origin |
 | `E2E_MAILPIT_URL` | `http://localhost:8025` | Mailpit API base |
+| `E2E_REGISTRATION_OPEN` | `false` | Pass `REGISTRATION_OPEN` to the managed backend |
+| `E2E_SKIP_LOGIN_OTP` | `false` | Pass `SKIP_LOGIN_OTP` to the managed backend |
 | `E2E_ADMIN_LOGIN` | `admin` | bootstrap superuser login |
 | `E2E_ADMIN_PASSWORD` | `Adm1n!Passw0rd123` | bootstrap superuser password |
 | `E2E_ADMIN_EMAIL` | `admin@localhost` | bootstrap superuser email |
@@ -71,3 +74,12 @@ the backend runs with `ACCESS_TOKEN_TTL=20s` and the test waits `E2E_ACCESS_TTL_
 (default 20) seconds. Override either via env before `make test-e2e` if needed.
 
 Tests run serially (`workers: 1`) because they share one Mailpit inbox.
+
+The opt-in development authentication journey runs against the real backend:
+
+```sh
+make test-e2e-dev-flags
+```
+
+`make test` runs both the default-safe `test-e2e` phase and this isolated phase,
+so CI continuously exercises both policies without changing the default stack.

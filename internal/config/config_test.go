@@ -45,6 +45,21 @@ func TestLoad_ok(t *testing.T) {
 	if c.PublicMailWorkers != 2 || c.PublicMailQueueSize != 64 || c.PublicMailJobTimeout != 10*time.Second {
 		t.Fatalf("unexpected public mail queue config: workers=%d size=%d timeout=%s", c.PublicMailWorkers, c.PublicMailQueueSize, c.PublicMailJobTimeout)
 	}
+	if c.RegistrationOpen || c.SkipLoginOTP {
+		t.Fatalf("development auth flags must default off: registration_open=%t skip_login_otp=%t", c.RegistrationOpen, c.SkipLoginOTP)
+	}
+}
+
+func TestLoadDevelopmentAuthFlags(t *testing.T) {
+	t.Setenv("REGISTRATION_OPEN", "true")
+	t.Setenv("SKIP_LOGIN_OTP", "true")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.RegistrationOpen || !c.SkipLoginOTP {
+		t.Fatalf("flags were not loaded: registration_open=%t skip_login_otp=%t", c.RegistrationOpen, c.SkipLoginOTP)
+	}
 }
 
 func TestLoadRejectsNonPositiveSMTPTimeout(t *testing.T) {

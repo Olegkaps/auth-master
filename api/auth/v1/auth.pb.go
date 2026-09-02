@@ -932,13 +932,14 @@ func (x *PreviewRegistrationInviteRequest) GetToken() string {
 }
 
 type PreviewRegistrationInviteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Valid         bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
-	Email         *string                `protobuf:"bytes,2,opt,name=email,proto3,oneof" json:"email,omitempty"`
-	Superuser     bool                   `protobuf:"varint,3,opt,name=superuser,proto3" json:"superuser,omitempty"`
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Valid            bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	Email            *string                `protobuf:"bytes,2,opt,name=email,proto3,oneof" json:"email,omitempty"`
+	Superuser        bool                   `protobuf:"varint,3,opt,name=superuser,proto3" json:"superuser,omitempty"`
+	ExpiresAt        *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
+	RegistrationOpen bool                   `protobuf:"varint,5,opt,name=registration_open,json=registrationOpen,proto3" json:"registration_open,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PreviewRegistrationInviteResponse) Reset() {
@@ -997,6 +998,13 @@ func (x *PreviewRegistrationInviteResponse) GetExpiresAt() *timestamppb.Timestam
 		return x.ExpiresAt
 	}
 	return nil
+}
+
+func (x *PreviewRegistrationInviteResponse) GetRegistrationOpen() bool {
+	if x != nil {
+		return x.RegistrationOpen
+	}
+	return false
 }
 
 type RegisterRequest struct {
@@ -1172,10 +1180,16 @@ func (x *LoginPasswordRequest) GetClientIp() string {
 }
 
 type LoginPasswordResponse struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	OtpSent         bool                   `protobuf:"varint,1,opt,name=otp_sent,json=otpSent,proto3" json:"otp_sent,omitempty"`
-	LoginChallenge  string                 `protobuf:"bytes,2,opt,name=login_challenge,json=loginChallenge,proto3" json:"login_challenge,omitempty"`
-	PasswordExpired bool                   `protobuf:"varint,3,opt,name=password_expired,json=passwordExpired,proto3" json:"password_expired,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// When password_expired=false, true means collect the emailed code; false
+	// means call VerifyLoginOTP exactly once using code="".
+	OtpSent bool `protobuf:"varint,1,opt,name=otp_sent,json=otpSent,proto3" json:"otp_sent,omitempty"`
+	// Single-use password-step proof required by VerifyLoginOTP when
+	// password_expired=false. Empty when password_expired=true.
+	LoginChallenge string `protobuf:"bytes,2,opt,name=login_challenge,json=loginChallenge,proto3" json:"login_challenge,omitempty"`
+	// True means no login challenge was issued. Reset the password, then begin a
+	// new password-login attempt; do not call VerifyLoginOTP for this response.
+	PasswordExpired bool `protobuf:"varint,3,opt,name=password_expired,json=passwordExpired,proto3" json:"password_expired,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1712,11 +1726,13 @@ func (x *VerifyAccessTokenResponse) GetClaims() *TokenClaims {
 }
 
 type VerifyLoginOTPRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Challenge     string                 `protobuf:"bytes,1,opt,name=challenge,proto3" json:"challenge,omitempty"`
-	Code          string                 `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
-	DeviceId      string                 `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	DeviceLabel   string                 `protobuf:"bytes,4,opt,name=device_label,json=deviceLabel,proto3" json:"device_label,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Challenge string                 `protobuf:"bytes,1,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	// For a LoginPassword response with password_expired=false: the emailed code
+	// when otp_sent=true, or exactly "" when otp_sent=false.
+	Code          string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
+	DeviceId      string `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	DeviceLabel   string `protobuf:"bytes,4,opt,name=device_label,json=deviceLabel,proto3" json:"device_label,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5099,13 +5115,14 @@ const file_api_auth_v1_auth_proto_rawDesc = "" +
 	"\x06cursor\x18\x02 \x01(\tR\x06cursor\x12\x1b\n" +
 	"\tpage_size\x18\x03 \x01(\x05R\bpageSize\"8\n" +
 	" PreviewRegistrationInviteRequest\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token\"\xcb\x01\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"\xf8\x01\n" +
 	"!PreviewRegistrationInviteResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x19\n" +
 	"\x05email\x18\x02 \x01(\tH\x00R\x05email\x88\x01\x01\x12\x1c\n" +
 	"\tsuperuser\x18\x03 \x01(\bR\tsuperuser\x12>\n" +
 	"\n" +
-	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01B\b\n" +
+	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampH\x01R\texpiresAt\x88\x01\x01\x12+\n" +
+	"\x11registration_open\x18\x05 \x01(\bR\x10registrationOpenB\b\n" +
 	"\x06_emailB\r\n" +
 	"\v_expires_at\"|\n" +
 	"\x0fRegisterRequest\x12!\n" +

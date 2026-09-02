@@ -24,6 +24,17 @@ func TestHealthz(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, w.Code)
 }
 
+func TestClosedRegistrationKeepsMissingInviteHTTPContract(t *testing.T) {
+	cfg := &config.Config{CORSAllowedOrigins: []string{"http://localhost:5173"}}
+	s := NewServer(cfg, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewBufferString(`{"login":"person"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.JSONEq(t, `{"error":"invite_token required"}`, w.Body.String())
+}
+
 func TestRefreshCredentialPrecedesCookieModeCSRF(t *testing.T) {
 	k := "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 	cfg := &config.Config{

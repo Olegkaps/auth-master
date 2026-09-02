@@ -73,7 +73,18 @@ func TestGeneratedSwaggerDocumentsCSRFErrorsAndNullableFields(t *testing.T) {
 	require.Contains(t, refreshResponses, "401")
 	require.Contains(t, refreshResponses, "403")
 
+	login := paths["/v1/auth/login"].(map[string]any)["post"].(map[string]any)
+	loginResponses := login["responses"].(map[string]any)
+	require.Contains(t, loginResponses["200"].(map[string]any)["description"], "Successful non-expired password step")
+	expiredDescription := loginResponses["403"].(map[string]any)["description"].(string)
+	require.Contains(t, expiredDescription, "no login_challenge")
+	require.Contains(t, expiredDescription, "password reset")
+
 	definitions := spec["definitions"].(map[string]any)
+	loginOTPProperties := definitions["httptransport.LoginOTPResponse"].(map[string]any)["properties"].(map[string]any)
+	require.Contains(t, loginOTPProperties["otp_sent"].(map[string]any)["description"], "non-expired")
+	verifyProperties := definitions["httptransport.LoginVerifyRequestBody"].(map[string]any)["properties"].(map[string]any)
+	require.Contains(t, verifyProperties["code"].(map[string]any)["description"], "successful password step")
 	meProperties := definitions["httptransport.MeResponse"].(map[string]any)["properties"].(map[string]any)
 	require.NotContains(t, meProperties, "password_setup_required", "password presence is not an authorization or setup state")
 	refreshSchema := definitions["httptransport.RefreshRequestBody"].(map[string]any)

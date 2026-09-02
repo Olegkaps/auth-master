@@ -15,7 +15,7 @@ export function loginView(params?: URLSearchParams): HTMLElement {
   )
   const alt = addMode
     ? h('p', { class: 'auth-alt' }, h('a', { href: '#/' }, '← Back to app'))
-    : h('p', { class: 'auth-alt' }, 'Have an invite? ', h('a', { href: '#/register' }, 'Create an account'))
+    : h('p', { class: 'auth-alt' }, 'Need an account? ', h('a', { href: '#/register' }, 'Register'))
   const accts = existingAccounts()
   wrap.append(brand, ...(accts ? [accts] : []), box, alt)
 
@@ -49,9 +49,9 @@ export function loginView(params?: URLSearchParams): HTMLElement {
     )
   }
 
-  const step1 = (): void => {
+  const step1 = (prefillLogin = params?.get('login') ?? ''): void => {
     clear(box)
-    const login = textInput({ placeholder: 'admin', autocomplete: 'username', value: params?.get('login') ?? '', 'data-testid': 'login-input' })
+    const login = textInput({ placeholder: 'admin', autocomplete: 'username', value: prefillLogin, 'data-testid': 'login-input' })
     const password = textInput({ type: 'password', autocomplete: 'current-password', 'data-testid': 'password-input' })
     const submit = button('Continue', async () => {
       const r = await run(api.login(login.value.trim(), password.value), undefined)
@@ -59,6 +59,22 @@ export function loginView(params?: URLSearchParams): HTMLElement {
       if (r.password_expired) {
         toast('Password expired — reset it to continue.', 'err')
         navigate(`/reset?login=${encodeURIComponent(login.value.trim())}`)
+        return
+      }
+      if (r.otp_sent === false) {
+        const deviceId = session.deviceId
+        try {
+          const verified = await api.verifyOtp(r.login_challenge ?? '', '', deviceId)
+          await completeSignIn(verified, deviceId)
+          toast('Signed in.', 'ok')
+          navigate('/')
+        } catch {
+          // The server challenge is intentionally single-use. If automatic
+          // continuation fails, restart cleanly instead of exposing an OTP form
+          // that can never succeed for an empty-code challenge.
+          step1(login.value.trim())
+          toast('Automatic sign-in could not be completed. Re-enter your password to try again.', 'err')
+        }
         return
       }
       toast('Code sent to your email (check Mailpit at :8025).', 'info')
@@ -71,13 +87,17 @@ export function loginView(params?: URLSearchParams): HTMLElement {
         return
       }
       await run(api.magicLinkStart(l))
-	  toast('If the account exists, a sign-in link was requested. If it does not arrive, wait briefly and request another link.', 'info')
+      toast('If the account exists, a sign-in link was requested. If it does not arrive, wait briefly and request another link.', 'info')
     }, 'ghost')
     login.addEventListener('keydown', (e) => e.key === 'Enter' && password.focus())
     password.addEventListener('keydown', (e) => e.key === 'Enter' && submit.click())
     box.append(
       h('h3', { class: 'panel-title' }, 'Sign in'),
-	  h('p', { class: 'muted small', 'data-testid': 'login-alternatives' }, 'Use your password plus an email code, or request an email login link. Both sign-in methods are equal; no password is required for magic links.'),
+      h(
+        'p',
+        { class: 'muted small', 'data-testid': 'login-alternatives' },
+        'Use your password to continue. Depending on server policy, you may then be asked for an email code. Or request an email login link instead; magic links do not require a password.',
+      ),
       field('Login', login),
       field('Password', password),
       submit,
@@ -114,7 +134,7 @@ export function loginView(params?: URLSearchParams): HTMLElement {
       h('p', { class: 'muted small' }, `Signing in as ${login}. The code is tied to this attempt — it's useless without it.`),
       field('One-time code', code),
       submit,
-      button('← Back', step1, 'ghost'),
+      button('← Back', () => step1(login), 'ghost'),
     )
     submit.dataset.testid = 'verify-btn'
     code.focus()

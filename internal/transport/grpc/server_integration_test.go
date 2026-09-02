@@ -94,6 +94,36 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 	adminClient := authv1.NewAdminServiceClient(conn)
 	roleClient := authv1.NewRoleServiceClient(conn)
 	sessionClient := authv1.NewSessionServiceClient(conn)
+	t.Run("open registration and skipped login OTP", func(t *testing.T) {
+		_, callErr := authClient.Register(ctx, &authv1.RegisterRequest{Login: "grpc-closed", Email: "grpc-closed@test.dev", Password: "GRPC-Closed-Password1!"})
+		require.Equal(t, codes.InvalidArgument, status.Code(callErr), "closed registration keeps the missing-invite contract")
+
+		cfg.RegistrationOpen = true
+		cfg.SkipLoginOTP = true
+		defer func() {
+			cfg.RegistrationOpen = false
+			cfg.SkipLoginOTP = false
+		}()
+		preview, callErr := authClient.PreviewRegistrationInvite(ctx, &authv1.PreviewRegistrationInviteRequest{})
+		require.NoError(t, callErr)
+		require.False(t, preview.GetValid())
+		require.True(t, preview.GetRegistrationOpen())
+		registered, callErr := authClient.Register(ctx, &authv1.RegisterRequest{Login: "grpc-open", Email: "grpc-open@test.dev", Password: "GRPC-Open-Password1!"})
+		require.NoError(t, callErr)
+		openUser, callErr := repo.GetUserByID(ctx, uuid.MustParse(registered.GetUserId()))
+		require.NoError(t, callErr)
+		require.False(t, openUser.Superuser)
+
+		_, callErr = authClient.Register(ctx, &authv1.RegisterRequest{InviteToken: "invalid-explicit", Login: "grpc-strict", Email: "grpc-strict@test.dev", Password: "GRPC-Strict-Password1!"})
+		require.Equal(t, codes.FailedPrecondition, status.Code(callErr))
+		passwordStep, callErr := authClient.LoginPassword(ctx, &authv1.LoginPasswordRequest{Login: "grpc-open", Password: "GRPC-Open-Password1!"})
+		require.NoError(t, callErr)
+		require.False(t, passwordStep.GetOtpSent())
+		require.NotEmpty(t, passwordStep.GetLoginChallenge())
+		verified, callErr := authClient.VerifyLoginOTP(ctx, &authv1.VerifyLoginOTPRequest{Challenge: passwordStep.GetLoginChallenge(), Code: "", DeviceId: "grpc-open-device"})
+		require.NoError(t, callErr)
+		require.NotEmpty(t, verified.GetTokens().GetAccessToken())
+	})
 	aliasID, err := repo.CreateHumanUser(ctx, "grpc-alias", "GRPC.ALIAS@example.test", passwordHash)
 	require.NoError(t, err)
 	for _, identity := range []string{"grpc-alias", "grpc.alias@example.test", "GRPC-ALIAS"} {

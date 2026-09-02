@@ -102,11 +102,21 @@ message RoleRequest {
 message PageRequest { string query = 1; string cursor = 2; int32 page_size = 3; }
 
 message PreviewRegistrationInviteRequest { string token = 1; }
-message PreviewRegistrationInviteResponse { bool valid = 1; optional string email = 2; bool superuser = 3; optional google.protobuf.Timestamp expires_at = 4; }
+message PreviewRegistrationInviteResponse { bool valid = 1; optional string email = 2; bool superuser = 3; optional google.protobuf.Timestamp expires_at = 4; bool registration_open = 5; }
 message RegisterRequest { string invite_token = 1; string login = 2; string email = 3; string password = 4; }
 message RegisterResponse { string user_id = 1; }
 message LoginPasswordRequest { string login = 1; string password = 2; optional string client_ip = 3; }
-message LoginPasswordResponse { bool otp_sent = 1; string login_challenge = 2; bool password_expired = 3; }
+message LoginPasswordResponse {
+  // When password_expired=false, true means collect the emailed code; false
+  // means call VerifyLoginOTP exactly once using code="".
+  bool otp_sent = 1;
+  // Single-use password-step proof required by VerifyLoginOTP when
+  // password_expired=false. Empty when password_expired=true.
+  string login_challenge = 2;
+  // True means no login challenge was issued. Reset the password, then begin a
+  // new password-login attempt; do not call VerifyLoginOTP for this response.
+  bool password_expired = 3;
+}
 message IssueServiceTokenRequest { string login = 1; string secret = 2; }
 message IssueServiceTokenResponse { string access_token = 1; google.protobuf.Timestamp expires_at = 2; }
 message CheckTokenRoleRequest { string access_token = 1; string role_name = 2; }
@@ -117,7 +127,14 @@ message InspectTokenRequest { string token = 1; }
 message InspectTokenResponse { TokenClaims claims = 1; }
 message VerifyAccessTokenRequest { string access_token = 1; }
 message VerifyAccessTokenResponse { TokenClaims claims = 1; }
-message VerifyLoginOTPRequest { string challenge = 1; string code = 2; string device_id = 3; string device_label = 4; }
+message VerifyLoginOTPRequest {
+  string challenge = 1;
+  // For a LoginPassword response with password_expired=false: the emailed code
+  // when otp_sent=true, or exactly "" when otp_sent=false.
+  string code = 2;
+  string device_id = 3;
+  string device_label = 4;
+}
 message VerifyLoginOTPResponse { TokenPair tokens = 1; }
 message StartMagicLinkRequest { string login = 1; }
 message CompleteMagicLinkRequest { string token = 1; string device_id = 2; string device_label = 3; }

@@ -17,7 +17,7 @@ func (s *Server) PreviewRegistrationInvite(ctx context.Context, req *authv1.Prev
 	if err != nil {
 		return nil, err
 	}
-	out := &authv1.PreviewRegistrationInviteResponse{Valid: preview.Valid}
+	out := &authv1.PreviewRegistrationInviteResponse{Valid: preview.Valid, RegistrationOpen: preview.RegistrationOpen}
 	if preview.Valid {
 		if preview.Email != nil {
 			out.Email = preview.Email
@@ -29,7 +29,7 @@ func (s *Server) PreviewRegistrationInvite(ctx context.Context, req *authv1.Prev
 }
 
 func (s *Server) Register(ctx context.Context, req *authv1.RegisterRequest) (*authv1.RegisterResponse, error) {
-	if strings.TrimSpace(req.GetInviteToken()) == "" {
+	if strings.TrimSpace(req.GetInviteToken()) == "" && !s.auth.RegistrationOpen() {
 		return nil, invalid("invite_token", "is required")
 	}
 	id, err := s.auth.Register(ctx, req.GetInviteToken(), req.GetLogin(), req.GetEmail(), req.GetPassword())

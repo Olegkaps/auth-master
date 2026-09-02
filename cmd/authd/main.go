@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,6 +50,9 @@ func main() {
 
 func run(cfg config.Config, log *slog.Logger) error {
 	ctx := context.Background()
+	if flags := enabledDevelopmentAuthFlags(cfg); len(flags) > 0 {
+		log.Warn("development authentication flags enabled", "flags", strings.Join(flags, ","))
+	}
 
 	db, err := migrate.Open(cfg.DatabaseURL)
 	if err != nil {
@@ -180,6 +184,17 @@ func run(cfg config.Config, log *slog.Logger) error {
 		serveErr = err
 	}
 	return serveErr
+}
+
+func enabledDevelopmentAuthFlags(cfg config.Config) []string {
+	var flags []string
+	if cfg.RegistrationOpen {
+		flags = append(flags, "REGISTRATION_OPEN")
+	}
+	if cfg.SkipLoginOTP {
+		flags = append(flags, "SKIP_LOGIN_OTP")
+	}
+	return flags
 }
 
 func loadGRPCCredentials(cfg config.Config) (credentials.TransportCredentials, error) {

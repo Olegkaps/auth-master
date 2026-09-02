@@ -12,25 +12,26 @@ import (
 
 // RegistrationInvitePreview is returned for a valid unused invite (no secrets).
 type RegistrationInvitePreview struct {
-	Valid     bool
-	Email     *string
-	Superuser bool
-	ExpiresAt time.Time
+	Valid            bool
+	RegistrationOpen bool
+	Email            *string
+	Superuser        bool
+	ExpiresAt        time.Time
 }
 
 func (a *Auth) PreviewRegistrationInvite(ctx context.Context, rawToken string) (*RegistrationInvitePreview, error) {
 	rawToken = strings.TrimSpace(rawToken)
 	if rawToken == "" {
-		return &RegistrationInvitePreview{Valid: false}, nil
+		return &RegistrationInvitePreview{Valid: false, RegistrationOpen: a.cfg.RegistrationOpen}, nil
 	}
 	inv, err := a.repo.GetValidRegistrationInviteByTokenHash(ctx, hashRefreshToken(rawToken))
 	if err != nil {
 		return nil, err
 	}
 	if inv == nil {
-		return &RegistrationInvitePreview{Valid: false}, nil
+		return &RegistrationInvitePreview{Valid: false, RegistrationOpen: a.cfg.RegistrationOpen}, nil
 	}
-	return &RegistrationInvitePreview{Valid: true, Email: inv.Email, Superuser: inv.Superuser, ExpiresAt: inv.ExpiresAt}, nil
+	return &RegistrationInvitePreview{Valid: true, RegistrationOpen: a.cfg.RegistrationOpen, Email: inv.Email, Superuser: inv.Superuser, ExpiresAt: inv.ExpiresAt}, nil
 }
 
 // CreateRegistrationInvite returns a one-time raw token (show once). Only superusers may call this.

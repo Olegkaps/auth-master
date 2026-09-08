@@ -20,10 +20,11 @@ type RegisterCreatedResponse struct {
 
 // RegistrationInvitePreviewResponse describes GET /auth/registration-invite.
 type RegistrationInvitePreviewResponse struct {
-	Valid     bool   `json:"valid"`
-	Email     string `json:"email,omitempty"`
-	Superuser bool   `json:"superuser,omitempty"`
-	ExpiresAt string `json:"expires_at,omitempty"`
+	Valid            bool   `json:"valid"`
+	RegistrationOpen bool   `json:"registration_open"`
+	Email            string `json:"email,omitempty"`
+	Superuser        bool   `json:"superuser,omitempty"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
 }
 
 // CreateRegistrationInviteRequest is the body for POST /admin/registration-invites.
@@ -60,8 +61,13 @@ type LoginRequestBody struct {
 	Password string `json:"password"`
 }
 
-// LoginOTPResponse is returned when OTP was sent (or would be sent).
+// LoginOTPResponse describes a successful, non-expired password step. OTPSent
+// is false only when the challenge is intentionally bound to an empty code by
+// SKIP_LOGIN_OTP. An expired password instead returns LoginPasswordExpiredResponse.
 type LoginOTPResponse struct {
+	// OTPSent selects the next client step after a successful, non-expired
+	// password check. When false, call verify-otp exactly once with the returned
+	// login_challenge, code="", and a device_id.
 	OTPSent bool `json:"otp_sent"`
 	// LoginChallenge must be sent back to verify-otp; it binds the OTP to this
 	// password-verified attempt (second factor).
@@ -70,6 +76,7 @@ type LoginOTPResponse struct {
 
 // LoginPasswordExpiredResponse is returned with HTTP 403 when the password must be changed.
 type LoginPasswordExpiredResponse struct {
+	// PasswordExpired means no login challenge was issued; reset the password and begin a new login attempt.
 	PasswordExpired bool `json:"password_expired"`
 }
 
@@ -92,7 +99,9 @@ type MagicLinkVerifyRequest struct {
 
 // LoginVerifyRequestBody is the body for POST /auth/login/verify-otp.
 type LoginVerifyRequestBody struct {
-	Challenge   string `json:"challenge"`
+	Challenge string `json:"challenge"`
+	// Code is the emailed value when a successful password step returns otp_sent=true,
+	// and must be empty when that response returns otp_sent=false.
 	Code        string `json:"code"`
 	DeviceID    string `json:"device_id"`
 	DeviceLabel string `json:"device_label"`

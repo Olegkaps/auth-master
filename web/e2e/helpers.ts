@@ -40,6 +40,13 @@ interface MailMessage {
   To: Array<{ Address: string }>
 }
 
+export async function mailCount(): Promise<number> {
+  const response = await mailFetch('/api/v1/messages?limit=1')
+  if (!response.ok) throw new Error(`Mailpit list returned ${response.status}`)
+  const payload = (await response.json()) as { total?: number; messages?: MailMessage[] }
+  return payload.total ?? payload.messages?.length ?? 0
+}
+
 /** Poll Mailpit for the latest message to `email` and extract its 6-digit code. */
 export async function waitForOtp(email: string, subjectIncludes = 'code'): Promise<string> {
   for (let i = 0; i < 40; i++) {
@@ -119,7 +126,8 @@ export async function inviteAndRegister(adminPage: Page, browser: Browser, login
   const p = await ctx.newPage()
   await p.goto(`/#/register?token=${encodeURIComponent(token)}`)
   await p.getByTestId('reg-login').fill(login)
-  await p.getByTestId('reg-email').fill(email)
+  await expect(p.getByTestId('reg-email')).toHaveValue(email)
+  await expect(p.getByTestId('reg-email')).toHaveAttribute('readonly', '')
   await p.getByTestId('reg-password').fill(pass)
   await p.getByTestId('reg-submit').click()
   await expect(p.getByTestId('login-input')).toBeVisible()

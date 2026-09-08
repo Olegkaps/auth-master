@@ -33,6 +33,10 @@ services:
       SMTP_HOST: mailpit
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:8080}
       REGISTRATION_INVITE_BASE_URL: ${REGISTRATION_INVITE_BASE_URL:-http://localhost:8080}
+      # Explicit interpolation lets one-off parent-shell overrides win over
+      # env_file while retaining closed production-safe defaults.
+      REGISTRATION_OPEN: ${REGISTRATION_OPEN:-false}
+      SKIP_LOGIN_OTP: ${SKIP_LOGIN_OTP:-false}
     expose:
       - "8080"
       - "9090"

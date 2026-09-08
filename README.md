@@ -19,12 +19,90 @@ framework-free TypeScript SPA.
 ```bash
 cp .env.example .env
 make install
-make up
 ```
+
+Choose one profile before starting. `make up` passes `.env` to Compose and
+recreates `authd` when its effective environment changes.
+
+For the safe, invite-only profile, add these exact entries to `.env`:
+
+```dotenv
+BOOTSTRAP_SUPERUSER_LOGIN=admin
+BOOTSTRAP_SUPERUSER_EMAIL=admin@localhost
+BOOTSTRAP_SUPERUSER_PASSWORD=Adm1n!Passw0rd123
+```
+
+Then run `make up`, open `http://localhost:8080`, and sign in as `admin`. Read
+the emailed login code at `http://localhost:8025`, then open **Invites** in the
+app to create the first registration link.
+
+For a frictionless local demo, add these exact entries to `.env` instead (or in
+addition to the bootstrap account):
+
+```dotenv
+REGISTRATION_OPEN=true
+SKIP_LOGIN_OTP=true
+```
+
+Run `make up` again to start or recreate the stack. For a one-off Compose run,
+the equivalent parent-shell override is:
+
+```bash
+REGISTRATION_OPEN=true SKIP_LOGIN_OTP=true make up
+```
+
+`make dev` is different: it starts infrastructure and the Go backend directly,
+so it does not source `.env` into the backend process. Pass non-default values
+explicitly, then run the SPA in another terminal:
+
+```bash
+REGISTRATION_OPEN=true SKIP_LOGIN_OTP=true make dev
+make web-dev
+```
+
+Equivalently, export those two variables before `make dev`; do not shell-source
+`.env`. The `make dev` recipe supplies its documented `admin` bootstrap account
+itself.
 
 The production SPA and API gateway are available at `http://localhost:8080`, Swagger UI at
 `http://localhost:8080/swagger/`, gRPC at `localhost:9090`, and Mailpit at
 `http://localhost:8025`.
+
+For an intentionally frictionless local demo, set `REGISTRATION_OPEN=true` to
+allow ordinary human accounts to register without an invite and
+`SKIP_LOGIN_OTP=true` to complete password login without an emailed code. Both
+default to `false` and should remain disabled in production. Supplied invite
+tokens are always checked, and password reset/change, step-up OTP, and magic
+links remain strict under these flags.
+With `LOG_LEVEL=debug`, `info`, or `warn`, authd emits a startup warning naming
+any enabled development authentication flags. `LOG_LEVEL=error` intentionally
+filters that warning.
+
+### Password-login continuation
+
+An expired password does not enter OTP verification. REST `POST /v1/auth/login`
+returns HTTP 403 with `{"password_expired":true}` and no `login_challenge`;
+complete password reset, then start a new login attempt. The gRPC
+`AuthService.LoginPassword` equivalent returns `password_expired=true`,
+`login_challenge=""`, and likewise requires password reset rather than
+`VerifyLoginOTP`.
+
+After a successful, non-expired password check, REST returns HTTP 200 and gRPC
+returns `password_expired=false`, both with a single-use `login_challenge`.
+When `otp_sent=true`, collect the emailed code. When `otp_sent=false`, no code
+was sent, but the client must still make exactly one verification call with
+`code=""` and a stable `device_id`:
+
+```http
+POST /v1/auth/login/verify-otp
+Content-Type: application/json
+
+{"challenge":"<login_challenge>","code":"","device_id":"browser-123"}
+```
+
+The equivalent gRPC continuation is `AuthService.VerifyLoginOTP` with the same
+empty `code`. A challenge is single-use in either mode; do not retry its verify
+call after an error—restart from the password step.
 
 Runnable integrations for MinIO storage, an HTTP deployment API, and a gRPC
 support desk are indexed in [`examples/`](examples/README.md). Build all three
@@ -176,19 +254,96 @@ The explicit copy is optional: every Compose-backed Make target creates the
 ignored `.env` from `.env.example` when it is missing and never overwrites an
 existing developer file.
 
+## MCP server for AI agents
+
+`cmd/auth-master-mcp` is a local stdio MCP server backed by auth-master's typed
+gRPC API. It exposes 13 focused user and RBAC tools: paginated user and role
+lookup, membership inspection, role creation and assignment, bans, and
+single-pair role-tag and membership-tag changes. Authentication credentials are
+read only from the MCP subprocess environment; they are never accepted as tool
+arguments or returned to the model.
+
+Build the server and start auth-master:
+
+```bash
+make mcp-build
+make up
+```
+
+Provision a dedicated service account through the existing superuser API. The
+complete MCP surface needs a superuser service because user listing and bans are
+superuser-only; a non-superuser service can use only the operations authorized
+by its assigned role memberships. Then add the executable to any stdio-capable
+MCP host, using an absolute command path:
+
+```json
+{
+  "mcpServers": {
+    "auth-master": {
+      "command": "/absolute/path/to/auth-master/.tools/bin/auth-master-mcp",
+      "env": {
+        "AUTH_MASTER_GRPC_ADDR": "localhost:9090",
+        "AUTH_MASTER_SERVICE_LOGIN": "agent-admin",
+        "AUTH_MASTER_SERVICE_SECRET": "replace-with-the-provisioned-secret"
+      }
+    }
+  }
+}
+```
+
+The adapter caches short-lived service JWTs in memory and refreshes them before
+expiry. Each upstream call has a 10-second deadline by default; override it with
+`AUTH_MASTER_REQUEST_TIMEOUT`, for example `3s`.
+
+The default gRPC connection is plaintext and is intended only for trusted local
+development. For TLS, set `AUTH_MASTER_GRPC_TLS_CA_FILE` to a PEM CA bundle and,
+when hostname inference is unsuitable, set
+`AUTH_MASTER_GRPC_TLS_SERVER_NAME`. Standard output is reserved exclusively for
+MCP messages; startup failures are written to standard error.
+
+The MCP adapter does not expose login, OTP, refresh tokens, password changes,
+service-account creation, signing-key rotation, or registration invites. Those
+credential and bootstrap workflows remain on the audited REST and gRPC APIs.
+There is no SPA change, so Playwright coverage does not apply; protocol unit
+tests and a full PostgreSQL-to-MCP integration journey cover this executable.
+
 ## Security model
 
 - Passwords require upper- and lowercase letters, a number, and a special
   character. Password history and Levenshtein similarity checks prevent reuse.
-- Login is password plus a single-use email OTP challenge. An incorrect OTP
-  consumes the challenge.
+- Human users may sign in either with password plus a single-use email OTP, or
+  with a fresh email magic link. These are equal alternatives: a password is
+  never required for repeated magic-link login. An incorrect OTP consumes its
+  password-login challenge.
+- `REGISTRATION_OPEN` and `SKIP_LOGIN_OTP` are opt-in demo controls, disabled by
+  default. Open registration can create only ordinary active human users. OTP
+  skipping applies only after all password-login checks and still creates a
+  TTL-bound, single-use empty-code challenge; it never weakens challenges
+  issued while normal OTP was enabled or any reset, change, step-up, invite, or
+  magic-link token.
+  Open registration also exposes password hashing work to unauthenticated
+  callers; keep it disabled outside controlled demos unless the deployment adds
+  appropriate edge rate limits and abuse protection.
 - Password-reset OTPs allow at most `OTP_MAX_ATTEMPTS` wrong codes (five by
   default), and reset issuance is throttled by `OTP_RESET_MIN_INTERVAL` (one
   minute by default). The public start endpoint gives the same response for
   unknown, throttled, and known accounts to avoid account enumeration.
+- Public magic-link and password-reset starts synchronously do only input
+  normalization and a nonblocking enqueue. A fixed worker pool performs every
+  identity lookup, token/OTP write, and SMTP exchange under its own deadline,
+  so known and unknown identities have the same request path. The bounded
+  queue deliberately drops excess or shutdown-time work while preserving the
+  same generic response; the UI tells users to wait briefly and request again.
+  Tune positive `PUBLIC_MAIL_WORKERS`, `PUBLIC_MAIL_QUEUE_SIZE`, and
+  `PUBLIC_MAIL_JOB_TIMEOUT` values when the defaults (2, 64, and 10 seconds)
+  are unsuitable.
+- Reset codes remain pending until SMTP accepts the message. `SMTP_TIMEOUT`
+  bounds the complete SMTP exchange (five seconds by default), and service
+  shutdown/job cancellation closes an in-flight connection.
 - Password changes require the current password and a separate email OTP.
 - Magic links are single-use, time-limited passwordless login tokens stored as
-  hashes.
+  hashes. Requesting another link remains available after every sign-out;
+  forgot-password is optional and can establish or replace a password.
 - Refresh tokens rotate and are scoped to a stable browser device identifier.
 - Signing keys can rotate; clients transparently refresh stale access tokens.
 - State-changing cookie-authenticated requests use CSRF protection.
@@ -197,6 +352,16 @@ existing developer file.
 
 All configuration variables and defaults are documented in `.env.example` and
 `internal/config/config.go`.
+
+Production deployments can keep sensitive values out of container inspection
+by setting a matching `_FILE` variable instead of the direct environment
+variable. Authd supports file-backed `DATABASE_URL`, SMTP user/password,
+bootstrap passwords/service secrets, both encryption keys, and the registration
+and magic callback URLs. For example, set
+`DATABASE_URL_FILE=/run/secrets/auth_database_url`. The file may end with the
+usual newline, which is removed; other whitespace is preserved. Setting both
+`NAME` and `NAME_FILE`, using an empty/unreadable file, or exceeding 64 KiB is a
+startup error.
 
 For trusted local automation, set both
 `BOOTSTRAP_SUPERUSER_SERVICE_LOGIN` and
@@ -297,6 +462,9 @@ also routed through the service authorization boundary.
 `web/` is a Vite/TypeScript demonstration client without a UI framework. It
 shows login and email OTP, password reset, magic-link login, multi-account
 switching, session management, invites, signing-key rotation, and RBAC.
+It discovers `registration_open` through the public registration preview
+contract, hides the invite field only for tokenless open signup, and completes
+`otp_sent=false` password logins without rendering an OTP field.
 
 The Roles page lists every parent mount. Superusers can always add or remove
 mounts. A role manager may do the same only when they manage both the child and
@@ -326,9 +494,10 @@ Run every check through `make`:
 | `make test-race` | Unit tests with Go's race detector |
 | `make test-integration` | PostgreSQL integration tests and the coverage gate |
 | `make test-e2e` | Playwright browser tests against a real stack |
+| `make test-e2e-dev-flags` | Isolated open-registration and skipped-OTP browser tests |
 | `make test-fuzz` | Short fuzz smoke tests used by CI |
 | `make check` | Fast pre-merge lint and integration gate |
-| `make test` | Complete suite with a final per-group summary |
+| `make test` | Complete suite, including both default and opt-in E2E phases, with a final per-group summary |
 | `make web-build` | Production SPA build |
 | `make docker-build` | Production container-image build through Compose |
 

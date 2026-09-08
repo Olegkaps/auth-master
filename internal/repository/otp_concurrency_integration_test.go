@@ -249,10 +249,131 @@ func TestIntegration_PasswordResetHistoryInsertFailureRollsBackEverything(t *tes
 	require.EqualValues(t, 1, activeResetOTPCount(t, s, uid))
 }
 
+func TestIntegration_PasswordResetReservationActivatesOnlyNewestDeliveredCode(t *testing.T) {
+	s, cleanup := setupRepo(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid, err := s.CreateHumanUser(ctx, "reserved-reset", "reserved-reset@example.test", "old-hash")
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	firstID, issued, err := s.ReservePasswordResetOTP(ctx, uid, []byte("first"), now, now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	first, err := s.GetMostRecentOTP(ctx, uid, domain.OTPPasswordReset)
+	require.NoError(t, err)
+	require.Nil(t, first.ConsumedAt)
+	require.Equal(t, "pending", first.DeliveryState, "a reservation is unusable before delivery")
+
+	secondID, issued, err := s.ReservePasswordResetOTP(ctx, uid, []byte("second"), now.Add(time.Second), now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	result, err := s.ActivatePasswordResetOTP(ctx, uid, secondID, now.Add(2*time.Second))
+	require.NoError(t, err)
+	require.Equal(t, PasswordResetActivated, result)
+	result, err = s.ActivatePasswordResetOTP(ctx, uid, firstID, now.Add(2*time.Second))
+	require.NoError(t, err)
+	require.Equal(t, PasswordResetSuperseded, result, "a late delivery callback cannot revive an older code")
+	latest, err := s.GetMostRecentOTP(ctx, uid, domain.OTPPasswordReset)
+	require.NoError(t, err)
+	require.Equal(t, secondID, latest.ID)
+	require.Nil(t, latest.ConsumedAt)
+	require.EqualValues(t, 1, activeResetOTPCount(t, s, uid))
+}
+
+func TestIntegration_PasswordResetPendingDeliveryPreservesPreviousActiveCode(t *testing.T) {
+	s, cleanup := setupRepo(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid, err := s.CreateHumanUser(ctx, "reset-delivery", "reset-delivery@example.test", "old-hash")
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, issued, err := s.IssuePasswordResetOTP(ctx, uid, []byte("old-code"), now, now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	_, issued, err = s.ReservePasswordResetOTP(ctx, uid, []byte("undelivered-code"), now.Add(time.Second), now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	require.EqualValues(t, 1, activeResetOTPCount(t, s, uid))
+
+	completed, err := s.CompletePasswordResetOTP(ctx, uid, []byte("undelivered-code"), now.Add(2*time.Second), 5, 5, resetMutation("undelivered"))
+	require.NoError(t, err)
+	require.False(t, completed, "a pending delivery must never verify")
+	completed, err = s.CompletePasswordResetOTP(ctx, uid, []byte("old-code"), now.Add(3*time.Second), 5, 5, resetMutation("old"))
+	require.NoError(t, err)
+	require.True(t, completed, "failed replacement delivery must preserve the prior active code")
+}
+
+func TestIntegration_PasswordResetActivationRollbackAndRetryAreIdempotent(t *testing.T) {
+	s, cleanup := setupRepo(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid, err := s.CreateHumanUser(ctx, "reset-activation", "reset-activation@example.test", "old-hash")
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, issued, err := s.IssuePasswordResetOTP(ctx, uid, []byte("old"), now, now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	targetID, issued, err := s.ReservePasswordResetOTP(ctx, uid, []byte("new"), now.Add(time.Second), now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	require.NoError(t, s.db.Exec(`CREATE FUNCTION reject_reset_activation() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF OLD.delivery_state = 'pending' AND NEW.delivery_state = 'active' THEN RAISE EXCEPTION 'forced activation failure'; END IF;
+			RETURN NEW;
+		END $$`).Error)
+	require.NoError(t, s.db.Exec(`CREATE TRIGGER reject_reset_activation BEFORE UPDATE OF delivery_state ON email_otp_challenges
+		FOR EACH ROW EXECUTE FUNCTION reject_reset_activation()`).Error)
+	_, err = s.ActivatePasswordResetOTP(ctx, uid, targetID, now.Add(2*time.Second))
+	require.Error(t, err)
+	require.EqualValues(t, 1, activeResetOTPCount(t, s, uid), "activation failure must roll back invalidation of the previous active code")
+	require.NoError(t, s.db.Exec(`DROP TRIGGER reject_reset_activation ON email_otp_challenges`).Error)
+	result, err := s.ActivatePasswordResetOTP(ctx, uid, targetID, now.Add(3*time.Second))
+	require.NoError(t, err)
+	require.Equal(t, PasswordResetActivated, result)
+	result, err = s.ActivatePasswordResetOTP(ctx, uid, targetID, now.Add(4*time.Second))
+	require.NoError(t, err)
+	require.Equal(t, PasswordResetActivated, result, "activation retry must be idempotent")
+	require.EqualValues(t, 1, activeResetOTPCount(t, s, uid))
+}
+
+func TestIntegration_PasswordResetActivationAndCompletionRaceIsLinearizable(t *testing.T) {
+	s, cleanup := setupRepo(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid, err := s.CreateHumanUser(ctx, "reset-activate-race", "reset-activate-race@example.test", "old-hash")
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, issued, err := s.IssuePasswordResetOTP(ctx, uid, []byte("old"), now, now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	newID, issued, err := s.ReservePasswordResetOTP(ctx, uid, []byte("new"), now.Add(time.Second), now.Add(time.Hour), 0)
+	require.NoError(t, err)
+	require.True(t, issued)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var activateErr, completeErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, activateErr = s.ActivatePasswordResetOTP(ctx, uid, newID, now.Add(2*time.Second))
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, completeErr = s.CompletePasswordResetOTP(ctx, uid, []byte("old"), now.Add(2*time.Second), 5, 5, resetMutation("old"))
+	}()
+	close(start)
+	wg.Wait()
+	require.NoError(t, activateErr)
+	require.NoError(t, completeErr)
+	require.EqualValues(t, 1, activeResetOTPCount(t, s, uid), "the delivered replacement is the single active code in either serialization")
+}
+
 func activeResetOTPCount(t *testing.T, s *Store, userID any) int64 {
 	t.Helper()
 	var count int64
 	require.NoError(t, s.db.Model(&emailOTPModel{}).
-		Where("user_id = ? AND purpose = ? AND consumed_at IS NULL", userID, string(domain.OTPPasswordReset)).Count(&count).Error)
+		Where("user_id = ? AND purpose = ? AND delivery_state = ? AND consumed_at IS NULL", userID, string(domain.OTPPasswordReset), "active").Count(&count).Error)
 	return count
 }

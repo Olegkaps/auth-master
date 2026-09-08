@@ -34,9 +34,9 @@ TESTSUM   = $(GOTESTSUM) --format testname --
 
 GOFMT_PATHS := $(shell find api cmd internal tools -name '*.go' 2>/dev/null | sort)
 
-.PHONY: help install env-file \
-	up down logs run dev web-dev grpc-smoke proto proto-check proto-lint proto-breaking proto-baseline-update proto-tools \
-	test test-unit test-integration test-e2e test-race \
+.PHONY: help install install-e2e e2e-preflight env-file \
+	up down logs run dev web-dev grpc-smoke mcp-build proto proto-check proto-lint proto-breaking proto-baseline-update proto-tools \
+	test test-unit test-integration test-e2e test-e2e-dev-flags test-race \
 	test-fuzz web-build docker-build \
 	fmt fmt-check vet lint lint-go lint-ts check swagger
 
@@ -61,8 +61,17 @@ install: ## Install Go tools, web dependencies, and Playwright
 	go install github.com/swaggo/swag/cmd/swag@$(SWAG_VER)
 	go install gotest.tools/gotestsum@$(GOTESTSUM_VER)
 	$(MAKE) proto-tools
-	@command -v npm >/dev/null 2>&1 && { cd web && npm ci --no-audit && $(PLAYWRIGHT_INSTALL); } \
-		|| echo "npm not found — skipping web dependencies"
+	$(MAKE) install-e2e
+
+web/node_modules/.package-lock.json: web/package.json web/package-lock.json
+	@command -v npm >/dev/null 2>&1 || { echo "npm is required for browser tests"; exit 1; }
+	cd web && npm ci --no-audit
+
+install-e2e: web/node_modules/.package-lock.json ## Install exact web dependencies and the Playwright Chromium binary
+	cd web && $(PLAYWRIGHT_INSTALL)
+
+e2e-preflight: web/node_modules/.package-lock.json ## Verify the browser runtime; use make install-e2e if missing
+	@cd web && node -e "const fs=require('node:fs'); const {chromium}=require('@playwright/test'); const p=chromium.executablePath(); try { fs.accessSync(p, fs.constants.X_OK) } catch { console.error('Playwright Chromium is missing; run make install-e2e'); process.exit(1) }"
 
 # -----------------------------------------------------------------------------
 # Run the project
@@ -121,6 +130,10 @@ run: dev ## Alias for make dev
 grpc-smoke: ## Check a running authd through standard gRPC health (GRPC_SMOKE_ADDR overrides localhost:9090)
 	go run ./tools/grpc-smoke
 
+mcp-build: ## Build the stdio MCP server under .tools/bin
+	mkdir -p '$(PROTO_TOOLS_DIR)'
+	go build -o '$(PROTO_TOOLS_DIR)/auth-master-mcp' ./cmd/auth-master-mcp
+
 web-dev: ## Start the Vite SPA server on port 5173
 	cd web && npm run dev
 
@@ -146,9 +159,13 @@ test-integration: ## Run Go integration tests and the coverage gate
 	INTEGRATION_DATABASE_URL='$(INTEGRATION_DB_URL)' REQUIRE_COVERAGE_GATE=1 $(TESTSUM) ./... -count=1
 	INTEGRATION_DATABASE_URL='$(INTEGRATION_DB_URL)' REQUIRE_COVERAGE_GATE=1 $(TESTSUM) -tags=covgate ./internal/covgate -count=1
 
-test-e2e: | .env
+test-e2e: e2e-preflight | .env
 test-e2e: ## Run Playwright UI tests against a managed stack
 	./scripts/e2e.sh $(E2E_ARGS)
+
+test-e2e-dev-flags: e2e-preflight | .env
+test-e2e-dev-flags: ## Run the isolated open-registration/skipped-OTP browser journeys
+	E2E_REGISTRATION_OPEN=true E2E_SKIP_LOGIN_OTP=true ./scripts/e2e.sh dev-flags.spec.ts
 
 # Run every group even when an earlier group fails, then print a summary.
 test: ## Run lint, race, fuzz, integration, and E2E with a summary
@@ -158,6 +175,7 @@ test: ## Run lint, race, fuzz, integration, and E2E with a summary
 	$(MAKE) --no-print-directory test-fuzz        || fails="$$fails fuzz"; \
 	$(MAKE) --no-print-directory test-integration || fails="$$fails integration"; \
 	$(MAKE) --no-print-directory test-e2e         || fails="$$fails e2e"; \
+	$(MAKE) --no-print-directory test-e2e-dev-flags || fails="$$fails e2e-dev-flags"; \
 	echo; echo "==================== SUMMARY ===================="; \
 	if [ -z "$$fails" ]; then echo "✅ all groups passed"; \
 	else echo "❌ failed groups:$$fails (details are shown above)"; exit 1; fi

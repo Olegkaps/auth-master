@@ -60,6 +60,7 @@ func testConfig() *config.Config {
 		LoginFailMax:                 10,
 		LoginLockDuration:            time.Minute,
 		NotifyOnFailThreshold:        99,
+		RegistrationInviteBaseURL:    "http://localhost:5173",
 	}
 }
 

@@ -3,6 +3,8 @@ package httptransport
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -20,9 +22,10 @@ type regBody struct {
 	Password    string `json:"password"`
 }
 
-// handleRegister registers a human user using a one-time invite token.
+// handleRegister registers a human user using a one-time invite token, or
+// without one when open registration is enabled.
 // @Summary Register human user
-// @Description Creates an account; invite must be valid and may lock the registration email.
+// @Description Creates an account. Without an invite, REGISTRATION_OPEN must be enabled. Any supplied invite is validated strictly and may lock the registration email.
 // @Tags auth
 // @Accept json
 // @Produce json
@@ -37,7 +40,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if b.InviteToken == "" {
+	if strings.TrimSpace(b.InviteToken) == "" && !s.cfg.RegistrationOpen {
 		s.writeErr(w, http.StatusBadRequest, "invite_token required")
 		return
 	}
@@ -61,7 +64,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // @Summary Preview registration invite
 // @Tags auth
 // @Produce json
-// @Param token query string true "Raw invite token"
+// @Param token query string false "Raw invite token; omit to discover open registration"
 // @Success 200 {object} RegistrationInvitePreviewResponse
 // @Failure 500 {object} ErrEnvelope
 // @Router /v1/auth/registration-invite [get]
@@ -72,7 +75,7 @@ func (s *Server) handleRegistrationInvitePreview(w http.ResponseWriter, r *http.
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	out := map[string]any{"valid": prev.Valid}
+	out := map[string]any{"valid": prev.Valid, "registration_open": prev.RegistrationOpen}
 	if prev.Valid {
 		out["email"] = prev.Email
 		out["superuser"] = prev.Superuser
@@ -188,10 +191,10 @@ type loginBody struct {
 // @Accept json
 // @Produce json
 // @Param body body LoginRequestBody true "Credentials"
-// @Success 200 {object} LoginOTPResponse "otp_sent indicates whether OTP email was sent"
+// @Success 200 {object} LoginOTPResponse "Successful non-expired password step. When otp_sent=false, call verify-otp exactly once with this login_challenge, code=\"\", and a device_id"
 // @Failure 400 {object} ErrEnvelope
 // @Failure 401 {object} ErrEnvelope "Invalid credentials"
-// @Failure 403 {object} LoginPasswordExpiredResponse "Password must be changed"
+// @Failure 403 {object} LoginPasswordExpiredResponse "Password expired; no login_challenge is issued. Complete password reset and begin a new login attempt"
 // @Failure 423 {object} ErrEnvelope "Account locked"
 // @Failure 500 {object} ErrEnvelope
 // @Router /v1/auth/login [post]
@@ -286,6 +289,21 @@ type magicStartBody struct {
 	Login string `json:"login"`
 }
 
+const publicMailStartBodyMaxBytes int64 = 1024
+
+func decodePublicMailStart(w http.ResponseWriter, r *http.Request, dst any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, publicMailStartBodyMaxBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("request body must contain one JSON value")
+	}
+	return nil
+}
+
 // handleMagicLinkStart emails a one-time passwordless login link.
 // @Summary Request a magic login link
 // @Description Public passwordless flow. Always returns 200 to avoid enumeration; a link is emailed only when the login exists and has an email.
@@ -299,15 +317,15 @@ type magicStartBody struct {
 // @Router /v1/auth/login/magic-link [post]
 func (s *Server) handleMagicLinkStart(w http.ResponseWriter, r *http.Request) {
 	var b magicStartBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+	if err := decodePublicMailStart(w, r, &b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if strings.TrimSpace(b.Login) == "" {
-		s.writeErr(w, http.StatusBadRequest, "login required")
-		return
-	}
 	if err := s.auth.StartMagicLink(r.Context(), b.Login); err != nil {
+		if errors.Is(err, service.ErrInvalidArgument) {
+			s.writeErr(w, http.StatusBadRequest, "invalid login")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -593,15 +611,15 @@ type resetStartBody struct {
 // @Router /v1/auth/password/reset/start [post]
 func (s *Server) handlePasswordResetStart(w http.ResponseWriter, r *http.Request) {
 	var b resetStartBody
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+	if err := decodePublicMailStart(w, r, &b); err != nil {
 		s.writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if strings.TrimSpace(b.Login) == "" {
-		s.writeErr(w, http.StatusBadRequest, "login required")
-		return
-	}
 	if err := s.auth.StartPasswordReset(r.Context(), b.Login); err != nil {
+		if errors.Is(err, service.ErrInvalidArgument) {
+			s.writeErr(w, http.StatusBadRequest, "invalid login")
+			return
+		}
 		s.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

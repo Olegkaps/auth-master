@@ -99,7 +99,7 @@ function applyCachedAccount(account: Account): void {
   try {
     activeId = account.id
     applyTokens(account, account.deviceId)
-    setUser({ id: account.id, login: account.login, email: account.email, kind: account.kind, superuser: account.superuser } as MeUser)
+		setUser({ id: account.id, login: account.login, email: account.email, kind: account.kind, superuser: account.superuser } as MeUser)
   } finally {
     suspendSync(false)
   }

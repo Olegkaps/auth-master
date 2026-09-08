@@ -27,22 +27,27 @@ func (s *Store) CreateEmailOTP(ctx context.Context, userID uuid.UUID, purpose do
 }
 
 type OTPRow struct {
-	ID           uuid.UUID
-	UserID       uuid.UUID
-	Purpose      domain.OTPPurpose
-	CodeHash     []byte
-	ExpiresAt    time.Time
-	ConsumedAt   *time.Time
-	AttemptCount int
-	Correlation  *string
-	CreatedAt    time.Time
+	ID            uuid.UUID
+	UserID        uuid.UUID
+	Purpose       domain.OTPPurpose
+	CodeHash      []byte
+	ExpiresAt     time.Time
+	ConsumedAt    *time.Time
+	DeliveryState string
+	AttemptCount  int
+	Correlation   *string
+	CreatedAt     time.Time
 }
 
 func (s *Store) GetLatestOTP(ctx context.Context, userID uuid.UUID, purpose domain.OTPPurpose) (*OTPRow, error) {
 	var m emailOTPModel
-	err := s.db.WithContext(ctx).
+	query := s.db.WithContext(ctx).
 		Where("user_id = ? AND purpose = ? AND consumed_at IS NULL", userID, string(purpose)).
-		Order("created_at DESC").
+		Order("created_at DESC, id DESC")
+	if purpose == domain.OTPPasswordReset {
+		query = query.Where("delivery_state = ?", "active")
+	}
+	err := query.
 		Limit(1).
 		Take(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -97,6 +102,30 @@ func (s *Store) IssuePasswordResetOTP(
 	now, expiresAt time.Time,
 	minInterval time.Duration,
 ) (uuid.UUID, bool, error) {
+	return s.issuePasswordResetOTP(ctx, userID, codeHash, now, expiresAt, minInterval, false)
+}
+
+// ReservePasswordResetOTP creates an inactive reset challenge. The service
+// activates it only after SMTP reports successful delivery, so an undelivered
+// code can never be used even when cleanup persistence fails.
+func (s *Store) ReservePasswordResetOTP(
+	ctx context.Context,
+	userID uuid.UUID,
+	codeHash []byte,
+	now, expiresAt time.Time,
+	minInterval time.Duration,
+) (uuid.UUID, bool, error) {
+	return s.issuePasswordResetOTP(ctx, userID, codeHash, now, expiresAt, minInterval, true)
+}
+
+func (s *Store) issuePasswordResetOTP(
+	ctx context.Context,
+	userID uuid.UUID,
+	codeHash []byte,
+	now, expiresAt time.Time,
+	minInterval time.Duration,
+	reserved bool,
+) (uuid.UUID, bool, error) {
 	var id uuid.UUID
 	issued := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -112,13 +141,22 @@ func (s *Store) IssuePasswordResetOTP(
 		if err == nil && minInterval > 0 && now.Sub(latest.CreatedAt) < minInterval {
 			return nil
 		}
-		if err := tx.Model(&emailOTPModel{}).
-			Where("user_id = ? AND purpose = ? AND consumed_at IS NULL", userID, string(domain.OTPPasswordReset)).
-			Update("consumed_at", now).Error; err != nil {
-			return err
+		if err == nil && !now.After(latest.CreatedAt) {
+			now = latest.CreatedAt.Add(time.Microsecond)
+		}
+		if !reserved {
+			if err := tx.Model(&emailOTPModel{}).
+				Where("user_id = ? AND purpose = ? AND consumed_at IS NULL", userID, string(domain.OTPPasswordReset)).
+				Update("consumed_at", now).Error; err != nil {
+				return err
+			}
 		}
 		row := emailOTPModel{
 			UserID: userID, Purpose: string(domain.OTPPasswordReset), CodeHash: codeHash, ExpiresAt: expiresAt,
+			CreatedAt: now, DeliveryState: "active",
+		}
+		if reserved {
+			row.DeliveryState = "pending"
 		}
 		if err := tx.Create(&row).Error; err != nil {
 			return err
@@ -128,6 +166,62 @@ func (s *Store) IssuePasswordResetOTP(
 		return nil
 	})
 	return id, issued, err
+}
+
+// ActivatePasswordResetOTP makes a delivered reservation usable only when it
+// is still the newest reset challenge for that user. A concurrent newer start
+// therefore cannot accidentally reactivate an older emailed code.
+func (s *Store) ActivatePasswordResetOTP(ctx context.Context, userID, otpID uuid.UUID, now time.Time) (PasswordResetActivation, error) {
+	result := PasswordResetSuperseded
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockOTPUser(tx, userID); err != nil {
+			return err
+		}
+		var target emailOTPModel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND purpose = ?", otpID, userID, string(domain.OTPPasswordReset)).
+			Take(&target).Error; err != nil {
+			return err
+		}
+		if target.DeliveryState == "active" && target.ConsumedAt == nil {
+			result = PasswordResetActivated
+			return nil
+		}
+		if target.ConsumedAt != nil || !now.Before(target.ExpiresAt) {
+			return nil
+		}
+		if target.DeliveryState != "pending" {
+			return errors.New("invalid password reset delivery state")
+		}
+		var newerActive int64
+		if err := tx.Model(&emailOTPModel{}).
+			Where("user_id = ? AND purpose = ? AND delivery_state = ? AND consumed_at IS NULL AND (created_at, id) > (?, ?)",
+				userID, string(domain.OTPPasswordReset), "active", target.CreatedAt, target.ID).
+			Count(&newerActive).Error; err != nil {
+			return err
+		}
+		if newerActive > 0 {
+			return tx.Model(&emailOTPModel{}).Where("id = ? AND consumed_at IS NULL", target.ID).Update("consumed_at", now).Error
+		}
+		if err := tx.Model(&emailOTPModel{}).
+			Where("user_id = ? AND purpose = ? AND consumed_at IS NULL AND id <> ? AND (created_at, id) < (?, ?)",
+				userID, string(domain.OTPPasswordReset), target.ID, target.CreatedAt, target.ID).
+			Update("consumed_at", now).Error; err != nil {
+			return err
+		}
+		updated := tx.Model(&emailOTPModel{}).
+			Where("id = ? AND user_id = ? AND delivery_state = ? AND consumed_at IS NULL", otpID, userID, "pending").
+			Update("delivery_state", "active")
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return errors.New("password reset reservation activation failed")
+		}
+		result = PasswordResetActivated
+		return nil
+	})
+	return result, err
 }
 
 // CompletePasswordResetOTP serializes against issuance and other completions.
@@ -152,7 +246,7 @@ func (s *Store) CompletePasswordResetOTP(
 		}
 		var row emailOTPModel
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("user_id = ? AND purpose = ? AND consumed_at IS NULL", userID, string(domain.OTPPasswordReset)).
+			Where("user_id = ? AND purpose = ? AND delivery_state = ? AND consumed_at IS NULL", userID, string(domain.OTPPasswordReset), "active").
 			Order("created_at DESC, id DESC").Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -246,7 +340,7 @@ func lockOTPUser(tx *gorm.DB, userID uuid.UUID) error {
 func otpRow(m *emailOTPModel) *OTPRow {
 	return &OTPRow{
 		ID: m.ID, UserID: m.UserID, Purpose: domain.OTPPurpose(m.Purpose), CodeHash: m.CodeHash, ExpiresAt: m.ExpiresAt,
-		ConsumedAt: m.ConsumedAt, AttemptCount: m.AttemptCount, Correlation: m.CorrelationID, CreatedAt: m.CreatedAt,
+		ConsumedAt: m.ConsumedAt, DeliveryState: m.DeliveryState, AttemptCount: m.AttemptCount, Correlation: m.CorrelationID, CreatedAt: m.CreatedAt,
 	}
 }
 

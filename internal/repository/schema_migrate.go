@@ -44,6 +44,9 @@ func MigrateDB(db *gorm.DB) error {
 	); err != nil {
 		return fmt.Errorf("automigrate: %w", err)
 	}
+	if err := migrateUserIdentityKeys(db); err != nil {
+		return err
+	}
 	// Deployments that predate token_version could already contain banned
 	// users and credentials issued without the claim (which decodes as version
 	// 0). Advance those subjects and revoke their live refresh sessions in one
@@ -74,10 +77,15 @@ func MigrateDB(db *gorm.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS signing_keys_one_current ON signing_keys (is_current) WHERE is_current = true`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS role_requests_one_pending ON role_requests (target_user_id, role_id) WHERE status = 'pending'`,
 		`CREATE INDEX IF NOT EXISTS users_keyset_order ON users (LOWER(login), id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS users_login_ci_unique ON users (LOWER(BTRIM(login)))`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS users_email_ci_unique ON users (LOWER(BTRIM(email))) WHERE email IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS roles_keyset_order ON roles (LOWER(name), id)`,
 		`CREATE INDEX IF NOT EXISTS users_login_trgm ON users USING gin (LOWER(login) gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS users_email_trgm ON users USING gin (LOWER(COALESCE(email, '')) gin_trgm_ops)`,
 		`CREATE INDEX IF NOT EXISTS roles_name_trgm ON roles USING gin (LOWER(name) gin_trgm_ops)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS email_otp_one_active_password_reset
+		 ON email_otp_challenges (user_id)
+		 WHERE purpose = 'password_reset' AND delivery_state = 'active' AND consumed_at IS NULL`,
 	} {
 		if err := db.Exec(q).Error; err != nil {
 			return fmt.Errorf("index: %w", err)
@@ -110,6 +118,9 @@ func MigrateDB(db *gorm.DB) error {
 			ALTER TABLE user_role_tags ADD CONSTRAINT user_role_tags_membership_fk FOREIGN KEY (user_role_id) REFERENCES user_roles(id) ON DELETE CASCADE;
 		EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
 		`DO $$ BEGIN
+			ALTER TABLE email_otp_challenges ADD CONSTRAINT email_otp_delivery_state_check CHECK (delivery_state IN ('pending', 'active'));
+		EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
+		`DO $$ BEGIN
 			ALTER TABLE role_requests ADD CONSTRAINT role_requests_requester_fk FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE;
 		EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
 		`DO $$ BEGIN
@@ -125,6 +136,160 @@ func MigrateDB(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+type legacyUserIdentity struct {
+	ID    uuid.UUID
+	Kind  string
+	Login string
+	Email *string
+}
+
+// migrateUserIdentityKeys makes every interactive identity canonical and
+// unambiguous before installing case-insensitive uniqueness enforcement. It
+// intentionally fails closed and reports every collision instead of merging
+// accounts based on guesses.
+func migrateUserIdentityKeys(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var installed bool
+		if err := tx.Raw(`SELECT to_regclass('user_identity_keys') IS NOT NULL
+			AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'users_canonicalize_identity' AND NOT tgisinternal)
+			AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'users_sync_human_identity_keys' AND NOT tgisinternal)`).Scan(&installed).Error; err != nil {
+			return fmt.Errorf("inspect user identity migration: %w", err)
+		}
+		if installed {
+			return nil
+		}
+		if err := tx.Exec("LOCK TABLE users IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+			return fmt.Errorf("user identity migration lock: %w", err)
+		}
+		var rows []legacyUserIdentity
+		if err := tx.Raw("SELECT id, kind, login, email FROM users ORDER BY id").Scan(&rows).Error; err != nil {
+			return fmt.Errorf("user identity migration scan: %w", err)
+		}
+		owners := make(map[string]map[uuid.UUID]struct{})
+		blanks := make([]uuid.UUID, 0)
+		blankHumanEmails := make([]uuid.UUID, 0)
+		for _, row := range rows {
+			login := strings.ToLower(strings.TrimSpace(row.Login))
+			if login == "" {
+				blanks = append(blanks, row.ID)
+			} else {
+				if owners["login:"+login] == nil {
+					owners["login:"+login] = map[uuid.UUID]struct{}{}
+				}
+				owners["login:"+login][row.ID] = struct{}{}
+				if row.Kind == "human" {
+					if owners["human:"+login] == nil {
+						owners["human:"+login] = map[uuid.UUID]struct{}{}
+					}
+					owners["human:"+login][row.ID] = struct{}{}
+				}
+			}
+			if row.Kind == "human" && (row.Email == nil || strings.TrimSpace(*row.Email) == "") {
+				blankHumanEmails = append(blankHumanEmails, row.ID)
+			}
+			if row.Email != nil && strings.TrimSpace(*row.Email) != "" {
+				email := strings.ToLower(strings.TrimSpace(*row.Email))
+				if owners["email:"+email] == nil {
+					owners["email:"+email] = map[uuid.UUID]struct{}{}
+				}
+				owners["email:"+email][row.ID] = struct{}{}
+				if row.Kind == "human" {
+					if owners["human:"+email] == nil {
+						owners["human:"+email] = map[uuid.UUID]struct{}{}
+					}
+					owners["human:"+email][row.ID] = struct{}{}
+				}
+			}
+		}
+		collisions := make([]string, 0)
+		for key, ids := range owners {
+			if len(ids) > 1 {
+				values := make([]string, 0, len(ids))
+				for id := range ids {
+					values = append(values, id.String())
+				}
+				sort.Strings(values)
+				collisions = append(collisions, fmt.Sprintf("%s=[%s]", key, strings.Join(values, ",")))
+			}
+		}
+		sort.Strings(collisions)
+		if len(blanks) > 0 || len(blankHumanEmails) > 0 || len(collisions) > 0 {
+			return fmt.Errorf("user identity migration blocked: blank_logins=%v blank_human_emails=%v collisions=%v; repair users and rerun", blanks, blankHumanEmails, collisions)
+		}
+		if err := tx.Exec(`UPDATE users
+			SET login = LOWER(BTRIM(login)),
+				email = CASE WHEN email IS NULL THEN NULL ELSE LOWER(BTRIM(email)) END
+			WHERE login IS DISTINCT FROM LOWER(BTRIM(login))
+				OR email IS DISTINCT FROM CASE WHEN email IS NULL THEN NULL ELSE LOWER(BTRIM(email)) END`).Error; err != nil {
+			return fmt.Errorf("user identity migration normalize: %w", err)
+		}
+		// A separate key table turns the human login-or-email namespace into one
+		// atomic database invariant. Separate indexes cannot prevent user A's
+		// login racing with user B's email.
+		if err := tx.Exec(`CREATE TABLE IF NOT EXISTS user_identity_keys (
+			normalized_identity text PRIMARY KEY,
+			user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE (user_id, normalized_identity)
+		)`).Error; err != nil {
+			return fmt.Errorf("create user identity keys: %w", err)
+		}
+		if err := tx.Exec(`INSERT INTO user_identity_keys (normalized_identity, user_id)
+			SELECT identity, id FROM (
+				SELECT LOWER(BTRIM(login)) AS identity, id FROM users WHERE kind = 'human'
+				UNION
+				SELECT LOWER(BTRIM(email)) AS identity, id FROM users WHERE kind = 'human' AND email IS NOT NULL
+			) identities
+			WHERE NOT EXISTS (
+				SELECT 1 FROM user_identity_keys existing
+				WHERE existing.normalized_identity = identities.identity AND existing.user_id = identities.id
+			)`).Error; err != nil {
+			return fmt.Errorf("populate user identity keys: %w", err)
+		}
+		if err := tx.Exec(`CREATE OR REPLACE FUNCTION canonicalize_user_identity() RETURNS trigger AS $$
+		BEGIN
+			NEW.login := LOWER(BTRIM(NEW.login));
+			IF NEW.email IS NOT NULL THEN NEW.email := LOWER(BTRIM(NEW.email)); END IF;
+			IF NEW.login = '' THEN RAISE EXCEPTION 'blank login' USING ERRCODE = '23514'; END IF;
+			IF NEW.kind = 'human' AND (NEW.email IS NULL OR NEW.email = '') THEN
+				RAISE EXCEPTION 'blank human email' USING ERRCODE = '23514';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql`).Error; err != nil {
+			return fmt.Errorf("create identity canonicalization trigger function: %w", err)
+		}
+		if err := tx.Exec(`DROP TRIGGER IF EXISTS users_canonicalize_identity ON users;
+			CREATE TRIGGER users_canonicalize_identity BEFORE INSERT OR UPDATE OF login, email, kind ON users
+			FOR EACH ROW EXECUTE FUNCTION canonicalize_user_identity()`).Error; err != nil {
+			return fmt.Errorf("install identity canonicalization trigger: %w", err)
+		}
+		if err := tx.Exec(`CREATE OR REPLACE FUNCTION sync_human_identity_keys() RETURNS trigger AS $$
+		BEGIN
+			IF TG_OP = 'DELETE' THEN
+				DELETE FROM user_identity_keys WHERE user_id = OLD.id;
+				RETURN OLD;
+			END IF;
+			DELETE FROM user_identity_keys WHERE user_id = NEW.id;
+			IF NEW.kind = 'human' THEN
+				INSERT INTO user_identity_keys (normalized_identity, user_id) VALUES (NEW.login, NEW.id);
+				IF NEW.email IS NOT NULL AND NEW.email <> NEW.login THEN
+					INSERT INTO user_identity_keys (normalized_identity, user_id) VALUES (NEW.email, NEW.id);
+				END IF;
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql`).Error; err != nil {
+			return fmt.Errorf("create identity key trigger function: %w", err)
+		}
+		if err := tx.Exec(`DROP TRIGGER IF EXISTS users_sync_human_identity_keys ON users;
+			CREATE TRIGGER users_sync_human_identity_keys AFTER INSERT OR UPDATE OF login, email, kind OR DELETE ON users
+			FOR EACH ROW EXECUTE FUNCTION sync_human_identity_keys()`).Error; err != nil {
+			return fmt.Errorf("install identity key trigger: %w", err)
+		}
+		return nil
+	})
 }
 
 type legacyRoleName struct {

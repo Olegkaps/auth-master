@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,6 +50,9 @@ func main() {
 
 func run(cfg config.Config, log *slog.Logger) error {
 	ctx := context.Background()
+	if flags := enabledDevelopmentAuthFlags(cfg); len(flags) > 0 {
+		log.Warn("development authentication flags enabled", "flags", strings.Join(flags, ","))
+	}
 
 	db, err := migrate.Open(cfg.DatabaseURL)
 	if err != nil {
@@ -71,12 +75,21 @@ func run(cfg config.Config, log *slog.Logger) error {
 	m := &mail.Sender{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 		User: cfg.SMTPUser, Password: cfg.SMTPPassword,
-		From: cfg.MailFrom,
+		From: cfg.MailFrom, Timeout: cfg.SMTPTimeout,
 	}
 	authSvc, err := service.NewAuth(&cfg, repo, m, log)
 	if err != nil {
 		return fmt.Errorf("auth service: %w", err)
 	}
+	serviceShutdown := false
+	defer func() {
+		if serviceShutdown {
+			return
+		}
+		fallbackCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		_ = authSvc.Shutdown(fallbackCtx)
+	}()
 	if err := authSvc.EnsureBootstrap(ctx); err != nil {
 		return fmt.Errorf("signing bootstrap: %w", err)
 	}
@@ -166,7 +179,22 @@ func run(cfg config.Config, log *slog.Logger) error {
 	if err := <-httpDone; err != nil && !errors.Is(err, context.Canceled) && serveErr == nil {
 		serveErr = err
 	}
+	serviceShutdown = true
+	if err := authSvc.Shutdown(shctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && serveErr == nil {
+		serveErr = err
+	}
 	return serveErr
+}
+
+func enabledDevelopmentAuthFlags(cfg config.Config) []string {
+	var flags []string
+	if cfg.RegistrationOpen {
+		flags = append(flags, "REGISTRATION_OPEN")
+	}
+	if cfg.SkipLoginOTP {
+		flags = append(flags, "SKIP_LOGIN_OTP")
+	}
+	return flags
 }
 
 func loadGRPCCredentials(cfg config.Config) (credentials.TransportCredentials, error) {

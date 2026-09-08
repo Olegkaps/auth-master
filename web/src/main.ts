@@ -193,7 +193,7 @@ async function boot(): Promise<void> {
   ], notFoundView)
 
   // Land somewhere sensible.
-  if (!window.location.hash) navigate(isSignedIn() ? '/' : '/login')
+	if (!window.location.hash) navigate(isSignedIn() ? '/' : '/login')
 }
 
 function notFoundView(): HTMLElement {

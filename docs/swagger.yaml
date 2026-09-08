@@ -160,11 +160,17 @@ definitions:
           password-verified attempt (second factor).
         type: string
       otp_sent:
+        description: |-
+          OTPSent selects the next client step after a successful, non-expired
+          password check. When false, call verify-otp exactly once with the returned
+          login_challenge, code="", and a device_id.
         type: boolean
     type: object
   httptransport.LoginPasswordExpiredResponse:
     properties:
       password_expired:
+        description: PasswordExpired means no login challenge was issued; reset the
+          password and begin a new login attempt.
         type: boolean
     type: object
   httptransport.LoginRequestBody:
@@ -179,6 +185,9 @@ definitions:
       challenge:
         type: string
       code:
+        description: |-
+          Code is the emailed value when a successful password step returns otp_sent=true,
+          and must be empty when that response returns otp_sent=false.
         type: string
       device_id:
         type: string
@@ -290,6 +299,8 @@ definitions:
         type: string
       expires_at:
         type: string
+      registration_open:
+        type: boolean
       superuser:
         type: boolean
       valid:
@@ -879,7 +890,9 @@ paths:
       - application/json
       responses:
         "200":
-          description: otp_sent indicates whether OTP email was sent
+          description: Successful non-expired password step. When otp_sent=false,
+            call verify-otp exactly once with this login_challenge, code=\"\", and
+            a device_id
           schema:
             $ref: '#/definitions/httptransport.LoginOTPResponse'
         "400":
@@ -891,7 +904,8 @@ paths:
           schema:
             $ref: '#/definitions/httptransport.ErrEnvelope'
         "403":
-          description: Password must be changed
+          description: Password expired; no login_challenge is issued. Complete password
+            reset and begin a new login attempt
           schema:
             $ref: '#/definitions/httptransport.LoginPasswordExpiredResponse'
         "423":
@@ -1179,7 +1193,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates an account; invite must be valid and may lock the registration
+      description: Creates an account. Without an invite, REGISTRATION_OPEN must be
+        enabled. Any supplied invite is validated strictly and may lock the registration
         email.
       parameters:
       - description: Registration payload
@@ -1209,10 +1224,9 @@ paths:
   /v1/auth/registration-invite:
     get:
       parameters:
-      - description: Raw invite token
+      - description: Raw invite token; omit to discover open registration
         in: query
         name: token
-        required: true
         type: string
       produces:
       - application/json

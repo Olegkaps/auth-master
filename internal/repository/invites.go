@@ -63,6 +63,24 @@ func (s *Store) MarkRegistrationInviteUsed(ctx context.Context, id uuid.UUID) er
 	return nil
 }
 
+// RegisterHumanOpen creates a complete ordinary human account atomically. It
+// deliberately has no superuser input: open registration can never elevate a
+// newly created account.
+func (s *Store) RegisterHumanOpen(
+	ctx context.Context,
+	login, email, passwordHash string,
+	historyCipher, historyNonce []byte,
+	historyKeep int,
+) (uuid.UUID, error) {
+	var userID uuid.UUID
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		userID, err = createRegisteredHuman(tx, login, email, passwordHash, historyCipher, historyNonce, historyKeep, false)
+		return err
+	})
+	return userID, err
+}
+
 // RegisterHumanWithInvite claims an invite and creates the complete account in
 // one transaction. The row lock makes concurrent replays deterministic: at
 // most one caller can create a user from a one-time invite.
@@ -86,30 +104,15 @@ func (s *Store) RegisterHumanWithInvite(
 		if err != nil {
 			return err
 		}
-		email = strings.TrimSpace(email)
+		login = strings.ToLower(strings.TrimSpace(login))
+		email = strings.ToLower(strings.TrimSpace(email))
 		if invite.Email != nil && strings.TrimSpace(*invite.Email) != "" && !strings.EqualFold(email, strings.TrimSpace(*invite.Email)) {
 			return nil
 		}
 		now := time.Now()
-		user := userModel{
-			Login: login, Email: &email, Kind: "human", PasswordHash: &passwordHash,
-			PasswordChangedAt: &now, Superuser: invite.Superuser,
-		}
-		if err := tx.Create(&user).Error; err != nil {
+		userID, err = createRegisteredHuman(tx, login, email, passwordHash, historyCipher, historyNonce, historyKeep, invite.Superuser)
+		if err != nil {
 			return err
-		}
-		userID = user.ID
-		if err := tx.Create(&passwordHistoryModel{
-			UserID: user.ID, PasswordHash: passwordHash, Ciphertext: historyCipher, Nonce: historyNonce,
-		}).Error; err != nil {
-			return err
-		}
-		if historyKeep > 0 {
-			if err := tx.Exec(`DELETE FROM password_history WHERE id IN (
-				SELECT id FROM password_history WHERE user_id = ? ORDER BY created_at DESC OFFSET ?
-			)`, user.ID, historyKeep).Error; err != nil {
-				return err
-			}
 		}
 		result := tx.Model(&registrationInviteModel{}).
 			Where("id = ? AND used_at IS NULL", invite.ID).
@@ -124,4 +127,36 @@ func (s *Store) RegisterHumanWithInvite(
 		return nil
 	})
 	return userID, registered, err
+}
+
+func createRegisteredHuman(
+	tx *gorm.DB,
+	login, email, passwordHash string,
+	historyCipher, historyNonce []byte,
+	historyKeep int,
+	superuser bool,
+) (uuid.UUID, error) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	email = strings.ToLower(strings.TrimSpace(email))
+	now := time.Now()
+	user := userModel{
+		Login: login, Email: &email, Kind: "human", PasswordHash: &passwordHash,
+		PasswordChangedAt: &now, Superuser: superuser,
+	}
+	if err := tx.Create(&user).Error; err != nil {
+		return uuid.Nil, err
+	}
+	if err := tx.Create(&passwordHistoryModel{
+		UserID: user.ID, PasswordHash: passwordHash, Ciphertext: historyCipher, Nonce: historyNonce,
+	}).Error; err != nil {
+		return uuid.Nil, err
+	}
+	if historyKeep > 0 {
+		if err := tx.Exec(`DELETE FROM password_history WHERE id IN (
+			SELECT id FROM password_history WHERE user_id = ? ORDER BY created_at DESC OFFSET ?
+		)`, user.ID, historyKeep).Error; err != nil {
+			return uuid.Nil, err
+		}
+	}
+	return user.ID, nil
 }

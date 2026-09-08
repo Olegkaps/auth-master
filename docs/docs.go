@@ -523,7 +523,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "otp_sent indicates whether OTP email was sent",
+                        "description": "Successful non-expired password step. When otp_sent=false, call verify-otp exactly once with this login_challenge, code=\\\"\\\", and a device_id",
                         "schema": {
                             "$ref": "#/definitions/httptransport.LoginOTPResponse"
                         }
@@ -541,7 +541,7 @@ const docTemplate = `{
                         }
                     },
                     "403": {
-                        "description": "Password must be changed",
+                        "description": "Password expired; no login_challenge is issued. Complete password reset and begin a new login attempt",
                         "schema": {
                             "$ref": "#/definitions/httptransport.LoginPasswordExpiredResponse"
                         }
@@ -971,7 +971,7 @@ const docTemplate = `{
         },
         "/v1/auth/register": {
             "post": {
-                "description": "Creates an account; invite must be valid and may lock the registration email.",
+                "description": "Creates an account. Without an invite, REGISTRATION_OPEN must be enabled. Any supplied invite is validated strictly and may lock the registration email.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1027,10 +1027,9 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Raw invite token",
+                        "description": "Raw invite token; omit to discover open registration",
                         "name": "token",
-                        "in": "query",
-                        "required": true
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -3072,6 +3071,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "otp_sent": {
+                    "description": "OTPSent selects the next client step after a successful, non-expired\npassword check. When false, call verify-otp exactly once with the returned\nlogin_challenge, code=\"\", and a device_id.",
                     "type": "boolean"
                 }
             }
@@ -3080,6 +3080,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "password_expired": {
+                    "description": "PasswordExpired means no login challenge was issued; reset the password and begin a new login attempt.",
                     "type": "boolean"
                 }
             }
@@ -3102,6 +3103,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "code": {
+                    "description": "Code is the emailed value when a successful password step returns otp_sent=true,\nand must be empty when that response returns otp_sent=false.",
                     "type": "string"
                 },
                 "device_id": {
@@ -3266,6 +3268,9 @@ const docTemplate = `{
                 },
                 "expires_at": {
                     "type": "string"
+                },
+                "registration_open": {
+                    "type": "boolean"
                 },
                 "superuser": {
                     "type": "boolean"

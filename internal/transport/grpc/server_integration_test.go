@@ -53,6 +53,7 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 	defer sqlDB.Close()
 	repo := repository.New(db)
 	cfg := grpcIntegrationConfig()
+	cfg.LoginFailMax = 3
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	auth, err := service.NewAuth(cfg, repo, &mail.Sender{Host: "127.0.0.1", Port: 1025, From: "grpc@test.dev"}, logger)
 	require.NoError(t, err)
@@ -93,6 +94,47 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 	adminClient := authv1.NewAdminServiceClient(conn)
 	roleClient := authv1.NewRoleServiceClient(conn)
 	sessionClient := authv1.NewSessionServiceClient(conn)
+	t.Run("open registration and skipped login OTP", func(t *testing.T) {
+		_, callErr := authClient.Register(ctx, &authv1.RegisterRequest{Login: "grpc-closed", Email: "grpc-closed@test.dev", Password: "GRPC-Closed-Password1!"})
+		require.Equal(t, codes.InvalidArgument, status.Code(callErr), "closed registration keeps the missing-invite contract")
+
+		cfg.RegistrationOpen = true
+		cfg.SkipLoginOTP = true
+		defer func() {
+			cfg.RegistrationOpen = false
+			cfg.SkipLoginOTP = false
+		}()
+		preview, callErr := authClient.PreviewRegistrationInvite(ctx, &authv1.PreviewRegistrationInviteRequest{})
+		require.NoError(t, callErr)
+		require.False(t, preview.GetValid())
+		require.True(t, preview.GetRegistrationOpen())
+		registered, callErr := authClient.Register(ctx, &authv1.RegisterRequest{Login: "grpc-open", Email: "grpc-open@test.dev", Password: "GRPC-Open-Password1!"})
+		require.NoError(t, callErr)
+		openUser, callErr := repo.GetUserByID(ctx, uuid.MustParse(registered.GetUserId()))
+		require.NoError(t, callErr)
+		require.False(t, openUser.Superuser)
+
+		_, callErr = authClient.Register(ctx, &authv1.RegisterRequest{InviteToken: "invalid-explicit", Login: "grpc-strict", Email: "grpc-strict@test.dev", Password: "GRPC-Strict-Password1!"})
+		require.Equal(t, codes.FailedPrecondition, status.Code(callErr))
+		passwordStep, callErr := authClient.LoginPassword(ctx, &authv1.LoginPasswordRequest{Login: "grpc-open", Password: "GRPC-Open-Password1!"})
+		require.NoError(t, callErr)
+		require.False(t, passwordStep.GetOtpSent())
+		require.NotEmpty(t, passwordStep.GetLoginChallenge())
+		verified, callErr := authClient.VerifyLoginOTP(ctx, &authv1.VerifyLoginOTPRequest{Challenge: passwordStep.GetLoginChallenge(), Code: "", DeviceId: "grpc-open-device"})
+		require.NoError(t, callErr)
+		require.NotEmpty(t, verified.GetTokens().GetAccessToken())
+	})
+	aliasID, err := repo.CreateHumanUser(ctx, "grpc-alias", "GRPC.ALIAS@example.test", passwordHash)
+	require.NoError(t, err)
+	for _, identity := range []string{"grpc-alias", "grpc.alias@example.test", "GRPC-ALIAS"} {
+		_, callErr := authClient.LoginPassword(ctx, &authv1.LoginPasswordRequest{Login: identity, Password: "wrong"})
+		require.Equal(t, codes.Unauthenticated, status.Code(callErr))
+	}
+	aliasUser, err := repo.GetUserByID(ctx, aliasID)
+	require.NoError(t, err)
+	require.NotNil(t, aliasUser.LockedUntil)
+	_, err = authClient.LoginPassword(ctx, &authv1.LoginPasswordRequest{Login: "GRPC.ALIAS@example.test", Password: "Human-Pass1!"})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	loginWithMagic := func(t *testing.T, userID uuid.UUID, token, device string) *authv1.TokenPair {
 		t.Helper()
 		_, insertErr := repo.InsertMagicLink(ctx, auth.IntegrationMagicHash(token), userID, time.Now().Add(time.Minute))
@@ -102,6 +144,45 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 		require.NotNil(t, response.GetTokens())
 		return response.GetTokens()
 	}
+
+	t.Run("passwordless magic user has HTTP parity and optional reset", func(t *testing.T) {
+		passwordlessID, createErr := repo.CreatePasswordlessHuman(ctx, "grpc-passwordless", "GRPC-PASSWORDLESS@example.test")
+		require.NoError(t, createErr)
+		require.NoError(t, repo.SetSuperuser(ctx, passwordlessID, true))
+		passwordlessRoleID, createErr := repo.CreateRole(ctx, "grpc-passwordless-admin", "", nil)
+		require.NoError(t, createErr)
+		require.NoError(t, repo.AssignUserRole(ctx, passwordlessID, passwordlessRoleID, domain.RoleMember, nil, time.Now(), nil))
+		passwordlessTokens := loginWithMagic(t, passwordlessID, "grpc-passwordless-magic", "passwordless-device")
+		passwordlessCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+passwordlessTokens.GetAccessToken())
+
+		meResponse, callErr := identityClient.GetMe(passwordlessCtx, &authv1.GetMeRequest{})
+		require.NoError(t, callErr)
+		require.True(t, meResponse.GetUser().GetSuperuser())
+		roleResponse, callErr := identityClient.CheckMyRole(passwordlessCtx, &authv1.CheckMyRoleRequest{RoleName: "grpc-passwordless-admin"})
+		require.NoError(t, callErr)
+		require.True(t, roleResponse.GetHasRole())
+		crossResponse, callErr := authClient.CheckTokenRole(ctx, &authv1.CheckTokenRoleRequest{AccessToken: passwordlessTokens.GetAccessToken(), RoleName: "grpc-passwordless-admin"})
+		require.NoError(t, callErr)
+		require.True(t, crossResponse.GetHasRole())
+		_, callErr = roleClient.ListRoles(passwordlessCtx, &authv1.ListRolesRequest{})
+		require.NoError(t, callErr)
+		_, callErr = adminClient.ListUsers(passwordlessCtx, &authv1.ListUsersRequest{})
+		require.NoError(t, callErr)
+
+		const resetCode = "246813"
+		_, issued, callErr := repo.IssuePasswordResetOTP(ctx, passwordlessID, auth.IntegrationOTPHash(resetCode), time.Now(), time.Now().Add(time.Minute), 0)
+		require.NoError(t, callErr)
+		require.True(t, issued)
+		_, callErr = authClient.CompletePasswordReset(ctx, &authv1.CompletePasswordResetRequest{Login: "GRPC-PASSWORDLESS@example.test", Code: resetCode, NewPassword: "Optional-Grpc9!"})
+		require.NoError(t, callErr)
+		passwordResult, callErr := auth.LoginPassword(ctx, "grpc-passwordless", "Optional-Grpc9!", nil)
+		require.NoError(t, callErr)
+		require.True(t, passwordResult.OTPRequired)
+
+		logoutTokens := loginWithMagic(t, passwordlessID, "grpc-passwordless-again", "passwordless-device-two")
+		_, callErr = authClient.Logout(ctx, &authv1.LogoutRequest{RefreshToken: logoutTokens.GetRefreshToken()})
+		require.NoError(t, callErr)
+	})
 
 	_, err = identityClient.GetMe(ctx, &authv1.GetMeRequest{})
 	require.Equal(t, codes.Unauthenticated, status.Code(err))
@@ -407,7 +488,7 @@ func TestIntegrationGRPCHumanServiceAndTCPJourney(t *testing.T) {
 		require.NoError(t, callErr)
 		thirdID, callErr := parseID("user_id", registered.GetUserId())
 		require.NoError(t, callErr)
-		_, callErr = repo.CreateEmailOTP(ctx, thirdID, domain.OTPPasswordReset, auth.IntegrationOTPHash("556677"), time.Now().Add(time.Minute), nil)
+		_, _, callErr = repo.IssuePasswordResetOTP(ctx, thirdID, auth.IntegrationOTPHash("556677"), time.Now(), time.Now().Add(time.Minute), 0)
 		require.NoError(t, callErr)
 		_, callErr = authClient.CompletePasswordReset(ctx, &authv1.CompletePasswordResetRequest{Login: "grpc-third", Code: "556677", NewPassword: "Nebula-Quartz9!"})
 		require.NoError(t, callErr)

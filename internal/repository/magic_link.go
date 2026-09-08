@@ -17,6 +17,15 @@ func (s *Store) InsertMagicLink(ctx context.Context, tokenHash []byte, userID uu
 	return row.ID, nil
 }
 
+// InvalidateMagicLink makes a reserved link unusable when its callback cannot
+// be constructed or SMTP does not accept the message. It is idempotent so the
+// service can safely retry cleanup without reviving or exposing a token.
+func (s *Store) InvalidateMagicLink(ctx context.Context, id uuid.UUID) error {
+	return s.db.WithContext(ctx).Model(&magicLinkModel{}).
+		Where("id = ? AND used_at IS NULL", id).
+		Update("used_at", time.Now()).Error
+}
+
 // ConsumeMagicLink atomically marks a valid (unused, unexpired) link as used and
 // returns the owning user id. Returns (uuid.Nil, nil) when there is no match.
 func (s *Store) ConsumeMagicLink(ctx context.Context, tokenHash []byte) (uuid.UUID, error) {

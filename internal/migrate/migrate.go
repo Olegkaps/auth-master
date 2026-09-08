@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/olegkapshai/auth-master/internal/repository"
@@ -12,9 +13,15 @@ import (
 
 // Open returns a GORM DB handle for PostgreSQL.
 func Open(databaseURL string) (*gorm.DB, error) {
-	return gorm.Open(postgres.Open(databaseURL), &gorm.Config{
+	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
+	if err != nil {
+		// PostgreSQL URL/parser errors can contain the original DSN. Authd and
+		// offline tools log this error, so never return driver details here.
+		return nil, errors.New("open PostgreSQL database failed")
+	}
+	return db, nil
 }
 
 // Up runs schema migration (enums, AutoMigrate, indexes, constraints).

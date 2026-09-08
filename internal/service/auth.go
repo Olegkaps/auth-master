@@ -14,44 +14,82 @@ import (
 	"github.com/olegkapshai/auth-master/internal/crypto"
 	"github.com/olegkapshai/auth-master/internal/domain"
 	"github.com/olegkapshai/auth-master/internal/jwtutil"
-	"github.com/olegkapshai/auth-master/internal/mail"
 	"github.com/olegkapshai/auth-master/internal/repository"
 )
 
 type Auth struct {
 	cfg           *config.Config
 	repo          repository.Repository
-	mail          *mail.Sender
+	mail          Mailer
 	log           *slog.Logger
 	signingMaster []byte
 	otpPepper     []byte
+	randomBytes   func(int) ([]byte, error)
+	publicMail    *publicMailQueue
 }
 
-func NewAuth(cfg *config.Config, repo repository.Repository, m *mail.Sender, log *slog.Logger) (*Auth, error) {
+type Mailer interface {
+	Send(context.Context, []string, string, string) error
+}
+
+func NewAuth(cfg *config.Config, repo repository.Repository, m Mailer, log *slog.Logger) (*Auth, error) {
 	sm, err := crypto.DecodeKey32(cfg.SigningKeyMasterKey)
 	if err != nil {
 		return nil, fmt.Errorf("signing master key: %w", err)
 	}
 	h := make([]byte, 32)
 	copy(h, sm) // otp pepper same material
-	return &Auth{cfg: cfg, repo: repo, mail: m, log: log, signingMaster: sm, otpPepper: h}, nil
+	a := &Auth{cfg: cfg, repo: repo, mail: m, log: log, signingMaster: sm, otpPepper: h, randomBytes: crypto.RandomBytes}
+	workers, capacity, timeout := cfg.PublicMailWorkers, cfg.PublicMailQueueSize, cfg.PublicMailJobTimeout
+	// Config.Load supplies and validates production values. Zero values remain
+	// backwards compatible for tests that construct Config directly; explicit
+	// negative values are rejected by the queue constructor.
+	if workers == 0 {
+		workers = 2
+	}
+	if capacity == 0 {
+		capacity = 64
+	}
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	queue, err := newPublicMailQueue(workers, capacity, timeout, log, a.processPublicMail)
+	if err != nil {
+		return nil, err
+	}
+	a.publicMail = queue
+	return a, nil
+}
+
+// Shutdown drains queued public mail while ctx is alive, then cancels workers.
+// It is safe to call more than once and concurrently with public requests.
+func (a *Auth) Shutdown(ctx context.Context) error {
+	if a == nil || a.publicMail == nil {
+		return nil
+	}
+	return a.publicMail.Shutdown(ctx)
 }
 
 func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password string) (uuid.UUID, error) {
 	inviteToken = strings.TrimSpace(inviteToken)
-	if inviteToken == "" {
+	openRegistration := inviteToken == "" && a.cfg.RegistrationOpen
+	if inviteToken == "" && !openRegistration {
 		return uuid.Nil, ErrInvalidInvite
 	}
-	inv, err := a.repo.GetValidRegistrationInviteByTokenHash(ctx, hashRefreshToken(inviteToken))
-	if err != nil {
-		return uuid.Nil, err
-	}
-	if inv == nil {
-		return uuid.Nil, ErrInvalidInvite
+	var inv *repository.RegistrationInvite
+	var err error
+	if !openRegistration {
+		inv, err = a.repo.GetValidRegistrationInviteByTokenHash(ctx, hashRefreshToken(inviteToken))
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if inv == nil {
+			return uuid.Nil, ErrInvalidInvite
+		}
 	}
 	login = normalizeLogin(login)
-	email = strings.TrimSpace(email)
-	if inv.Email != nil && strings.TrimSpace(*inv.Email) != "" && !strings.EqualFold(email, *inv.Email) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if inv != nil && inv.Email != nil && strings.TrimSpace(*inv.Email) != "" && !strings.EqualFold(email, *inv.Email) {
 		return uuid.Nil, ErrInvalidInvite
 	}
 	if err := checkPasswordComplexity(password); err != nil {
@@ -69,6 +107,9 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	if err != nil {
 		return uuid.Nil, err
 	}
+	if openRegistration {
+		return a.repo.RegisterHumanOpen(ctx, login, email, hash, cipher, nonce, a.cfg.PasswordHistoryN)
+	}
 	id, registered, err := a.repo.RegisterHumanWithInvite(
 		ctx, hashRefreshToken(inviteToken), login, email, hash, cipher, nonce, a.cfg.PasswordHistoryN,
 	)
@@ -81,6 +122,10 @@ func (a *Auth) Register(ctx context.Context, inviteToken, login, email, password
 	return id, nil
 }
 
+// RegistrationOpen reports the public registration policy without exposing
+// the mutable Config to transports.
+func (a *Auth) RegistrationOpen() bool { return a.cfg.RegistrationOpen }
+
 type LoginPasswordResult struct {
 	OTPRequired     bool
 	PasswordExpired bool
@@ -91,12 +136,12 @@ type LoginPasswordResult struct {
 
 func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net.IP) (*LoginPasswordResult, error) {
 	login = normalizeLogin(login)
-	u, err := a.repo.GetUserByLogin(ctx, login)
+	u, err := a.repo.GetHumanUserByLoginOrEmail(ctx, login)
 	if err != nil {
 		return nil, err
 	}
 	if u == nil || u.Kind != domain.UserHuman {
-		a.recordFailedLogin(ctx, login, ip)
+		a.recordFailedLogin(ctx, login, nil, ip)
 		return nil, ErrInvalidCredentials
 	}
 	if u.BannedAt != nil {
@@ -106,20 +151,23 @@ func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net
 		return nil, ErrLocked
 	}
 	if u.PasswordHash == nil {
-		a.recordFailedLogin(ctx, login, ip)
+		a.recordFailedLogin(ctx, u.Login, u, ip)
 		return nil, ErrInvalidCredentials
 	}
 	ok, err := crypto.VerifyPassword(password, *u.PasswordHash)
 	if err != nil || !ok {
-		a.recordFailedLogin(ctx, login, ip)
+		a.recordFailedLogin(ctx, u.Login, u, ip)
 		return nil, ErrInvalidCredentials
 	}
 	if a.passwordExpired(u) {
 		return &LoginPasswordResult{PasswordExpired: true}, nil
 	}
-	code, err := randomNumericCode(a.cfg.OTPCodeLength)
-	if err != nil {
-		return nil, err
+	code := ""
+	if !a.cfg.SkipLoginOTP {
+		code, err = randomNumericCode(a.cfg.OTPCodeLength)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Bind the OTP to a single-use challenge issued only to whoever passed the
 	// password step. verify-otp requires this challenge, so an intercepted email
@@ -131,10 +179,10 @@ func (a *Auth) LoginPassword(ctx context.Context, login, password string, ip net
 	if _, err := a.repo.CreateEmailOTP(ctx, u.ID, domain.OTPLogin, chash, exp, &challenge); err != nil {
 		return nil, err
 	}
-	if u.Email != nil {
-		_ = a.mail.Send([]string{*u.Email}, "Your login code", fmt.Sprintf("Code: %s (expires in %v)", code, a.cfg.OTPCodeTTL))
+	if !a.cfg.SkipLoginOTP && u.Email != nil {
+		_ = a.mail.Send(ctx, []string{*u.Email}, "Your login code", fmt.Sprintf("Code: %s (expires in %v)", code, a.cfg.OTPCodeTTL))
 	}
-	return &LoginPasswordResult{OTPRequired: true, LoginChallenge: challenge}, nil
+	return &LoginPasswordResult{OTPRequired: !a.cfg.SkipLoginOTP, LoginChallenge: challenge}, nil
 }
 
 func (a *Auth) passwordExpired(u *domain.User) bool {
@@ -144,21 +192,20 @@ func (a *Auth) passwordExpired(u *domain.User) bool {
 	return time.Since(*u.PasswordChangedAt) > a.cfg.PasswordMaxAge
 }
 
-func (a *Auth) recordFailedLogin(ctx context.Context, login string, ip net.IP) {
-	_ = a.repo.InsertFailedLogin(ctx, login, ip)
+func (a *Auth) recordFailedLogin(ctx context.Context, failureKey string, known *domain.User, ip net.IP) {
+	failureKey = normalizeLogin(failureKey)
+	_ = a.repo.InsertFailedLogin(ctx, failureKey, ip)
 	since := time.Now().Add(-a.cfg.LoginFailWindow)
-	n, _ := a.repo.CountFailedLogins(ctx, login, since)
+	n, _ := a.repo.CountFailedLogins(ctx, failureKey, since)
 	if int(n) >= a.cfg.LoginFailMax {
 		lock := time.Now().Add(a.cfg.LoginLockDuration)
-		u, _ := a.repo.GetUserByLogin(ctx, login)
-		if u != nil {
-			_ = a.repo.SetLockedUntil(ctx, u.ID, &lock)
+		if known != nil {
+			_ = a.repo.SetLockedUntil(ctx, known.ID, &lock)
 		}
 	}
 	if int(n) == a.cfg.NotifyOnFailThreshold && a.cfg.NotifyOnFailThreshold > 0 {
-		u, _ := a.repo.GetUserByLogin(ctx, login)
-		if u != nil && u.Email != nil {
-			_ = a.mail.Send([]string{*u.Email}, "Security alert", fmt.Sprintf("Multiple failed sign-in attempts for %s", login))
+		if known != nil && known.Email != nil {
+			_ = a.mail.Send(ctx, []string{*known.Email}, "Security alert", "Multiple failed sign-in attempts were detected for your account.")
 		}
 	}
 }
@@ -246,7 +293,7 @@ func (a *Auth) issueTokenPair(ctx context.Context, u *domain.User, deviceID, dev
 		if device == "" {
 			device = deviceID // fall back to the opaque id when no browser/UA label was sent
 		}
-		_ = a.mail.Send([]string{*u.Email}, "New sign-in", fmt.Sprintf("Account %s signed in from %s", u.Login, device))
+		_ = a.mail.Send(ctx, []string{*u.Email}, "New sign-in", fmt.Sprintf("Account %s signed in from %s", u.Login, device))
 	}
 	return &TokenPair{AccessToken: access, RefreshToken: rawRefresh, ExpiresAt: time.Now().Add(a.cfg.AccessTokenTTL)}, u, nil
 }
@@ -327,7 +374,7 @@ func (a *Auth) VerifyAccessToken(ctx context.Context, token string, wantTyp stri
 	if v.Typ != wantTyp {
 		return nil, ErrWrongTokenType
 	}
-	if err := a.rejectInactiveTokenSubject(ctx, v.Subject, v.TokenVersion); err != nil {
+	if _, err := a.tokenSubject(ctx, v.Subject, v.TokenVersion); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -357,28 +404,28 @@ func (a *Auth) VerifyAccessOrServiceToken(ctx context.Context, token string) (*j
 	if v.Typ != jwtutil.TypeAccess && v.Typ != jwtutil.TypeService {
 		return nil, ErrWrongTokenType
 	}
-	if err := a.rejectInactiveTokenSubject(ctx, v.Subject, v.TokenVersion); err != nil {
+	if _, err := a.tokenSubject(ctx, v.Subject, v.TokenVersion); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
 
-func (a *Auth) rejectInactiveTokenSubject(ctx context.Context, subject string, tokenVersion int64) error {
+func (a *Auth) tokenSubject(ctx context.Context, subject string, tokenVersion int64) (*domain.User, error) {
 	userID, err := uuid.Parse(subject)
 	if err != nil {
-		return ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 	u, err := a.repo.GetUserByID(ctx, userID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := requireActiveUser(u); err != nil {
-		return err
+		return nil, err
 	}
 	if u.TokenVersion != tokenVersion {
-		return ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
-	return nil
+	return u, nil
 }
 
 // StartPasswordChange2FA emails a one-time code that must be supplied to
@@ -396,18 +443,21 @@ func (a *Auth) StartPasswordChange2FA(ctx context.Context, userID uuid.UUID) err
 	if _, err := a.repo.CreateEmailOTP(ctx, userID, domain.OTPPasswordChange, hashOTP(a.otpPepper, code), exp, nil); err != nil {
 		return err
 	}
-	return a.mail.Send([]string{*u.Email}, "Confirm password change", fmt.Sprintf("Code: %s", code))
+	return a.mail.Send(ctx, []string{*u.Email}, "Confirm password change", fmt.Sprintf("Code: %s", code))
 }
 
 // ChangePassword changes the password after verifying the old password AND an
 // email OTP (two-factor). Start the OTP with StartPasswordChange2FA.
 func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword, code string) error {
 	u, err := a.repo.GetUserByID(ctx, userID)
-	if err != nil || u == nil || u.PasswordHash == nil {
+	if err != nil || u == nil {
 		return ErrNotFound
 	}
-	ok, err := crypto.VerifyPassword(oldPassword, *u.PasswordHash)
-	if err != nil || !ok {
+	if u.PasswordHash == nil {
+		return ErrInvalidCredentials
+	}
+	ok, verifyErr := crypto.VerifyPassword(oldPassword, *u.PasswordHash)
+	if verifyErr != nil || !ok {
 		return ErrInvalidCredentials
 	}
 	// Second factor: the emailed OTP.
@@ -436,7 +486,7 @@ func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword
 		return err
 	}
 	if u.Email != nil {
-		_ = a.mail.Send([]string{*u.Email}, "Password changed", "Your password was changed.")
+		_ = a.mail.Send(ctx, []string{*u.Email}, "Password changed", "Your password was changed.")
 	}
 	return nil
 }
@@ -446,39 +496,74 @@ func (a *Auth) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword
 // is a silent no-op when the login is unknown or has no email — callers should
 // always report success to the client.
 func (a *Auth) StartPasswordReset(ctx context.Context, login string) error {
-	login = normalizeLogin(login)
-	u, err := a.repo.GetUserByLogin(ctx, login)
-	if err != nil || u == nil || u.Email == nil || u.Kind != domain.UserHuman {
-		return nil
+	_ = ctx
+	login, err := normalizePublicIdentity(login)
+	if err != nil {
+		return err
+	}
+	a.publicMail.enqueue(publicMailJob{kind: publicMailPasswordReset, identity: login})
+	return nil
+}
+
+func (a *Auth) processPasswordReset(ctx context.Context, login string) {
+	u, err := a.repo.GetHumanUserByLoginOrEmail(ctx, login)
+	if err != nil || u == nil || u.Email == nil || u.Kind != domain.UserHuman || u.BannedAt != nil {
+		return
 	}
 	code, err := randomNumericCode(a.cfg.OTPCodeLength)
 	if err != nil {
-		return err
+		// Keep every internal failure indistinguishable from an unknown or
+		// ineligible identity at this public enumeration-resistant endpoint.
+		return
 	}
 	chash := hashOTP(a.otpPepper, code)
 	exp := time.Now().Add(a.cfg.OTPCodeTTL)
-	otpID, issued, err := a.repo.IssuePasswordResetOTP(ctx, u.ID, chash, time.Now(), exp, a.cfg.OTPResetMinInterval)
+	otpID, issued, err := a.repo.ReservePasswordResetOTP(ctx, u.ID, chash, time.Now(), exp, a.cfg.OTPResetMinInterval)
 	if err != nil {
-		return err
+		return
 	}
 	if !issued {
 		// Preserve the endpoint's enumeration-resistant success response.
-		return nil
+		return
 	}
-	if err := a.mail.Send([]string{*u.Email}, "Reset your password", fmt.Sprintf("Code: %s", code)); err != nil {
-		// Do not leave an undelivered credential active.
-		_ = a.repo.ConsumeOTP(ctx, otpID)
-		return err
+	if err := a.mail.Send(ctx, []string{*u.Email}, "Reset your password", fmt.Sprintf("Code: %s", code)); err != nil {
+		// Reservations are inactive until delivery succeeds, so SMTP failures
+		// can never leave an undelivered credential usable.
+		return
 	}
-	return nil
+	// Activation is deliberately last. A database failure may make a delivered
+	// code unusable, but it cannot make an undelivered code usable or reveal
+	// whether the account exists through the public endpoint.
+	// SMTP may report acceptance at the same instant the mail-job deadline
+	// cancels ctx. Activation is the compensating persistence step that makes
+	// that delivered code usable, so it must not inherit job cancellation.
+	// Preserve context values, but keep the detached database work tightly
+	// bounded so shutdown and repository failures cannot strand a worker.
+	activationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	for attempt := 0; attempt < 3; attempt++ {
+		result, activateErr := a.repo.ActivatePasswordResetOTP(activationCtx, u.ID, otpID, time.Now())
+		if activateErr == nil {
+			if result == repository.PasswordResetSuperseded && a.log != nil {
+				a.log.Info("password reset delivery superseded")
+			}
+			return
+		}
+		if activationCtx.Err() != nil {
+			break
+		}
+	}
+	if a.log != nil {
+		a.log.Error("password reset activation failed")
+	}
 }
 
 // ResetPasswordWithOTP verifies the emailed OTP and sets a new password without
 // requiring the old one. Enforces the same password policy as ChangePassword.
 func (a *Auth) ResetPasswordWithOTP(ctx context.Context, login, code, newPassword string) error {
 	login = normalizeLogin(login)
-	u, err := a.repo.GetUserByLogin(ctx, login)
-	if err != nil || u == nil || u.Kind != domain.UserHuman {
+	u, err := a.repo.GetHumanUserByLoginOrEmail(ctx, login)
+	if err != nil || u == nil || u.Kind != domain.UserHuman || u.BannedAt != nil {
 		return ErrOTPInvalid // do not leak whether the login exists
 	}
 	maxAttempts := a.cfg.OTPMaxAttempts
@@ -495,7 +580,7 @@ func (a *Auth) ResetPasswordWithOTP(ctx context.Context, login, code, newPasswor
 		return err
 	}
 	if u.Email != nil {
-		_ = a.mail.Send([]string{*u.Email}, "Password changed", "Your password was reset.")
+		_ = a.mail.Send(ctx, []string{*u.Email}, "Password changed", "Your password was reset.")
 	}
 	return nil
 }
@@ -542,7 +627,7 @@ func (a *Auth) StartSessionRevokeOTP(ctx context.Context, userID uuid.UUID) erro
 	if _, err := a.repo.CreateEmailOTP(ctx, userID, domain.OTPSessionRevoke, chash, exp, nil); err != nil {
 		return err
 	}
-	return a.mail.Send([]string{*u.Email}, "Confirm session revoke", fmt.Sprintf("Code: %s", code))
+	return a.mail.Send(ctx, []string{*u.Email}, "Confirm session revoke", fmt.Sprintf("Code: %s", code))
 }
 
 func (a *Auth) RevokeSessionWithOTP(ctx context.Context, userID uuid.UUID, sessionID uuid.UUID, code string) error {
@@ -605,7 +690,7 @@ func (a *Auth) BeginStepUp2FA(ctx context.Context, userID uuid.UUID, ttl time.Du
 	if _, err := a.repo.CreateEmailOTP(ctx, userID, domain.OTPStepUp2FA, chash, otpExp, &correlationID); err != nil {
 		return "", err
 	}
-	_ = a.mail.Send([]string{*u.Email}, "Step-up 2FA code", fmt.Sprintf("Code: %s\nCorrelation: %s", code, correlationID))
+	_ = a.mail.Send(ctx, []string{*u.Email}, "Step-up 2FA code", fmt.Sprintf("Code: %s\nCorrelation: %s", code, correlationID))
 	return correlationID, nil
 }
 
